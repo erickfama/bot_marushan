@@ -1,4 +1,7 @@
+# Python ver 3.11.2
 discord.py==2.7.1
 davey>=0.1.0
 yt-dlp==2026.8.19
+static-ffmpeg==3.0
+yt-dlp-ejs==0.8.0
 python-dotenv==1.0.0
