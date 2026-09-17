@@ -1,0 +1,31 @@
+# Entorno virtual
+.venv/
+venv/
+ENV/
+
+# Archivos de caché y compilados de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Credenciales y secretos (Token de Discord)
+creds/api_creds.py
+.env
+
+# Configuraciones de editores / IDEs
+.cursor/
+.vscode/
+
+# Archivos de log
+*.log
+
+# Posibles descargas accidentales de audio/video de yt-dlp
+*.webm
+*.m4a
+*.mp3
+*.mp4
+*.opus
+*.ogg
+*.wav
+*.part
+*.ytdl
