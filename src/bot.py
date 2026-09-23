@@ -20,13 +20,11 @@ class MarushanBot(commands.Bot):
         intents.voice_states = True
         super().__init__(command_prefix="!", intents=intents, help_command=commands.DefaultHelpCommand(dm_help=False))
         self.settings = settings
-        spotify = None
-        if settings.spotify_enabled:
-            spotify = SpotifyClient(
-                settings.spotify_client_id or "",
-                settings.spotify_client_secret or "",
-                settings.spotify_refresh_token or "",
-            )
+        spotify = SpotifyClient(
+            settings.spotify_client_id or "",
+            settings.spotify_client_secret or "",
+            settings.spotify_refresh_token or "",
+        )
         self.music = MusicManager(self, settings, spotify)
 
     async def on_interaction(self, interaction: discord.Interaction) -> None:

@@ -7,7 +7,7 @@ Bot musical personal para Discord. Usa `discord.py` y Wavelink para controlar un
 - Cola de hasta 500 pistas, inserción siguiente, páginas, mover, eliminar, limpiar y mezclar.
 - Pause, resume, skip, previous, jump, seek, volumen 1–150, loop de canción/cola y autoplay.
 - YouTube, playlists de YouTube, radio/HTTP, adjuntos de Discord y archivos del directorio `media/`.
-- Spotify OAuth para tracks, álbumes y playlists privadas; resolución de cada pista contra YouTube.
+- Enlaces públicos de canciones de Spotify sin OAuth; OAuth para álbumes, playlists y biblioteca privada. Cada pista se resuelve contra YouTube.
 - Slash commands en un servidor y comandos `!` de compatibilidad.
 - Controles mediante botones y desconexión por inactividad.
 - Docker Compose con reinicio automático, healthchecks y rotación de logs.
@@ -54,7 +54,7 @@ python scripts/spotify_oauth.py --client-id TU_CLIENT_ID
 
 El script abre el navegador, solicita `playlist-read-private`, `playlist-read-collaborative` y `user-library-read`, y muestra el refresh token. Guárdalo en `secrets/spotify_refresh_token.txt`; nunca lo confirmes en Git.
 
-Spotify no se usa para retransmitir audio. Sus metadatos conservan el enlace de atribución y la canción se empareja con un resultado reproducible de YouTube.
+Spotify no se usa para retransmitir audio. Sus metadatos conservan el enlace de atribución y la canción se empareja con un resultado reproducible de YouTube. Los enlaces públicos de canciones funcionan sin credenciales; los álbumes y playlists requieren la configuración OAuth anterior.
 
 ## Comandos
 

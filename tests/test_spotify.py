@@ -7,6 +7,8 @@ from src.spotify import SpotifyClient, SpotifyError, is_spotify_url
 
 def test_detects_spotify_urls_and_uris() -> None:
     assert is_spotify_url("https://open.spotify.com/track/abc123")
+    assert is_spotify_url("https://open.spotify.com/intl-es/track/abc123?si=test")
+    assert is_spotify_url("https://spotify.link/short-code")
     assert is_spotify_url("spotify:playlist:abc123")
     assert not is_spotify_url("https://youtube.com/watch?v=abc")
 
@@ -54,3 +56,24 @@ async def test_rejects_invalid_spotify_url() -> None:
     client = SpotifyClient("id", "secret", "refresh")
     with pytest.raises(SpotifyError):
         await client.resolve("not spotify")
+
+
+@pytest.mark.asyncio
+async def test_public_track_does_not_require_oauth(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = SpotifyClient()
+    expected = client._track({"name": "Creep", "artists": [{"name": "Radiohead"}]})
+
+    async def fake_public_track(url: str):
+        assert url == "https://open.spotify.com/track/abc123"
+        return expected
+
+    monkeypatch.setattr(client, "_public_track", fake_public_track)
+    tracks = await client.resolve("https://open.spotify.com/intl-es/track/abc123?si=test")
+    assert tracks == [expected]
+
+
+@pytest.mark.asyncio
+async def test_public_playlist_explains_oauth_requirement() -> None:
+    client = SpotifyClient()
+    with pytest.raises(SpotifyError, match="OAuth"):
+        await client.resolve("https://open.spotify.com/playlist/abc123")
