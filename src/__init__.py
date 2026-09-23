@@ -1,0 +1,1 @@
+"""Marushan music bot."""

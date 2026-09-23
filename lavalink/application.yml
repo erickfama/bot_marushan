@@ -1,0 +1,60 @@
+server:
+  port: 2333
+  address: 0.0.0.0
+
+spring:
+  main:
+    banner-mode: log
+
+lavalink:
+  plugins:
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.2"
+      snapshot: false
+  server:
+    password: ${LAVALINK_PASSWORD:youshallnotpass}
+    sources:
+      youtube: false
+      bandcamp: true
+      soundcloud: true
+      twitch: true
+      vimeo: true
+      nico: false
+      http: true
+      local: true
+    filters:
+      volume: true
+    bufferDurationMs: 400
+    frameBufferDurationMs: 5000
+    trackStuckThresholdMs: 10000
+    useSeekGhosting: true
+    youtubePlaylistLoadLimit: 500
+    playerUpdateInterval: 5
+
+plugins:
+  youtube:
+    enabled: true
+    allowSearch: true
+    allowDirectVideoIds: true
+    allowDirectPlaylistIds: true
+    remoteCipher:
+      url: "http://yt-cipher:8001"
+      userAgent: "marushan-bot"
+    clients:
+      - WEB
+      - WEBEMBEDDED
+      - MWEB
+      - MUSIC
+      - TVHTML5_SIMPLY
+      - ANDROID_VR
+
+logging:
+  level:
+    root: INFO
+    lavalink: INFO
+  request:
+    enabled: true
+    includeClientInfo: true
+    includeHeaders: false
+    includeQueryString: true
+    includePayload: false
+    maxPayloadLength: 10000

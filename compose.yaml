@@ -1,0 +1,98 @@
+name: marushan
+
+services:
+  yt-cipher:
+    image: ghcr.io/kikkia/yt-cipher:master@sha256:4c5ec381ff57336cfc24822d2b526a5ad7cd0171f61065a1bbc87bb736842449
+    restart: unless-stopped
+    environment:
+      OVERRIDE_PLAYER_VARIANT: IAS
+    networks:
+      - music-internal
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  lavalink:
+    image: ghcr.io/lavalink-devs/lavalink:4.2.2-alpine
+    restart: unless-stopped
+    depends_on:
+      yt-cipher:
+        condition: service_started
+    environment:
+      SPRING_CONFIG_IMPORT: optional:configtree:/run/secrets/
+      _JAVA_OPTIONS: -Xms128m -Xmx512m
+    secrets:
+      - source: lavalink_password
+        target: lavalink.server.password
+    volumes:
+      - ./lavalink/application.yml:/opt/Lavalink/application.yml:ro
+      - ./media:/media:ro
+    networks:
+      - music-internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --header=\"Authorization: $$(cat /run/secrets/lavalink.server.password)\" -O - http://localhost:2333/version >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  bot:
+    build: .
+    restart: unless-stopped
+    init: true
+    depends_on:
+      lavalink:
+        condition: service_healthy
+    environment:
+      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID:?Define DISCORD_GUILD_ID}
+      DISCORD_TOKEN_FILE: /run/secrets/discord_token
+      LAVALINK_URI: http://lavalink:2333
+      LAVALINK_PASSWORD_FILE: /run/secrets/lavalink_password
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
+      SPOTIFY_CLIENT_SECRET_FILE: /run/secrets/spotify_client_secret
+      SPOTIFY_REFRESH_TOKEN_FILE: /run/secrets/spotify_refresh_token
+      DEFAULT_VOLUME: ${DEFAULT_VOLUME:-75}
+      IDLE_TIMEOUT_SECONDS: ${IDLE_TIMEOUT_SECONDS:-600}
+      MAX_QUEUE_SIZE: ${MAX_QUEUE_SIZE:-500}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      BOT_DISPLAY_NAME: ${BOT_DISPLAY_NAME:-Bot Nissin}
+    secrets:
+      - discord_token
+      - lavalink_password
+      - spotify_client_secret
+      - spotify_refresh_token
+    volumes:
+      - ./media:/media:ro
+    networks:
+      - music-internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('lavalink', 2333), 3).close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  music-internal:
+    driver: bridge
+
+secrets:
+  discord_token:
+    file: ./secrets/discord_token.txt
+  lavalink_password:
+    file: ./secrets/lavalink_password.txt
+  spotify_client_secret:
+    file: ./secrets/spotify_client_secret.txt
+  spotify_refresh_token:
+    file: ./secrets/spotify_refresh_token.txt

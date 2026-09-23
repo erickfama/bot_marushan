@@ -10,7 +10,11 @@ __pycache__/
 
 # Credenciales y secretos (Token de Discord)
 creds/api_creds.py
+creds/*.txt
 .env
+.env.*
+!.env.example
+secrets/
 
 # Configuraciones de editores / IDEs
 .cursor/
@@ -29,3 +33,10 @@ creds/api_creds.py
 *.wav
 *.part
 *.ytdl
+
+# Test/build output
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/

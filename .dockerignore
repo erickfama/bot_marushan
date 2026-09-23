@@ -1,0 +1,11 @@
+.git
+.gitignore
+.env*
+!.env.example
+creds
+secrets
+tests
+__pycache__
+.pytest_cache
+*.pyc
+media/*
