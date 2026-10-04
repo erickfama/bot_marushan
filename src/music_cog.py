@@ -141,117 +141,94 @@ class MusicCog(commands.Cog, name="Música"):
     @commands.hybrid_command(name="pause", description="Pausa la reproducción")
     @commands.guild_only()
     async def pause(self, ctx: commands.Context) -> None:
-        player = self.manager.require_same_channel(ctx.guild, self._member(ctx))
-        await player.pause(True)
+        await self.manager.pause(ctx.guild, self._member(ctx), True)
         await ctx.send("⏸️ Reproducción pausada.")
 
     @commands.hybrid_command(name="resume", aliases=["unpause"], description="Continúa la reproducción")
     @commands.guild_only()
     async def resume(self, ctx: commands.Context) -> None:
-        player = self.manager.require_same_channel(ctx.guild, self._member(ctx))
-        await player.pause(False)
+        await self.manager.pause(ctx.guild, self._member(ctx), False)
         await ctx.send("▶️ Reproducción reanudada.")
 
     @commands.hybrid_command(name="skip", description="Omite la canción actual")
     @commands.guild_only()
     async def skip(self, ctx: commands.Context) -> None:
-        player = self.manager.require_same_channel(ctx.guild, self._member(ctx))
-        self.manager.session(ctx.guild.id).force_advance = True
-        await player.skip(force=True)
+        await self.manager.skip(ctx.guild, self._member(ctx))
         await ctx.send("⏭️ Canción omitida.")
 
     @commands.hybrid_command(name="previous", aliases=["prev"], description="Regresa a la canción anterior")
     @commands.guild_only()
     async def previous(self, ctx: commands.Context) -> None:
-        player = self.manager.require_same_channel(ctx.guild, self._member(ctx))
-        session = self.manager.session(ctx.guild.id)
-        track = session.queue.previous()
-        if not track:
-            raise MusicError("No hay una canción anterior.")
-        session.ignore_end_events += 1
-        await self.manager.play_track(player, track)
+        track = await self.manager.previous(ctx.guild, self._member(ctx))
         await ctx.send(f"⏮️ Reproduciendo **{track_name(track)}**.")
 
     @commands.hybrid_command(name="stop", description="Detiene la música y limpia la cola")
     @commands.guild_only()
     async def stop(self, ctx: commands.Context) -> None:
-        player = self.manager.require_same_channel(ctx.guild, self._member(ctx))
-        self.manager.session(ctx.guild.id).queue.reset()
-        await player.stop(force=True)
+        await self.manager.stop(ctx.guild, self._member(ctx))
         await ctx.send("⏹️ Reproducción detenida y cola limpiada.")
 
     @commands.hybrid_command(name="disconnect", aliases=["dc", "leave"], description="Desconecta el bot")
     @commands.guild_only()
     async def disconnect(self, ctx: commands.Context) -> None:
-        player = self.manager.require_same_channel(ctx.guild, self._member(ctx))
-        session = self.manager.session(ctx.guild.id)
-        session.queue.reset()
-        session.ignore_end_events += 1
-        await player.disconnect()
+        await self.manager.disconnect(ctx.guild, self._member(ctx))
         await ctx.send("👋 Desconectado del canal de voz.")
 
     @commands.hybrid_command(name="remove", aliases=["rm"], description="Elimina una canción de la cola")
     @commands.guild_only()
     async def remove(self, ctx: commands.Context, posicion: int) -> None:
-        track = self.manager.session(ctx.guild.id).queue.remove(posicion)
+        self.manager.require_same_channel(ctx.guild, self._member(ctx))
+        track = await self.manager.remove(ctx.guild.id, posicion)
         await ctx.send(f"🗑️ Eliminé **{track_name(track)}**.")
 
     @commands.hybrid_command(name="move", description="Mueve una canción dentro de la cola")
     @commands.guild_only()
     async def move(self, ctx: commands.Context, origen: int, destino: int) -> None:
-        self.manager.session(ctx.guild.id).queue.move(origen, destino)
+        self.manager.require_same_channel(ctx.guild, self._member(ctx))
+        await self.manager.move(ctx.guild.id, origen, destino)
         await ctx.send(f"↕️ Moví la canción {origen} a la posición {destino}.")
 
     @commands.hybrid_command(name="clear", aliases=["clearqueue", "cq"], description="Vacía las canciones pendientes")
     @commands.guild_only()
     async def clear(self, ctx: commands.Context) -> None:
-        count = self.manager.session(ctx.guild.id).queue.clear()
+        self.manager.require_same_channel(ctx.guild, self._member(ctx))
+        count = await self.manager.clear(ctx.guild.id)
         await ctx.send(f"🧹 Eliminé **{count}** canciones pendientes.")
 
     @commands.hybrid_command(name="shuffle", description="Mezcla la cola")
     @commands.guild_only()
     async def shuffle(self, ctx: commands.Context) -> None:
-        queue = self.manager.session(ctx.guild.id).queue
-        if len(queue.items) < 2:
-            raise MusicError("Se necesitan al menos dos canciones pendientes.")
-        queue.shuffle()
+        self.manager.require_same_channel(ctx.guild, self._member(ctx))
+        await self.manager.shuffle(ctx.guild.id)
         await ctx.send("🔀 Cola mezclada.")
 
     @commands.hybrid_command(name="jump", description="Salta a una posición de la cola")
     @commands.guild_only()
     async def jump(self, ctx: commands.Context, posicion: int) -> None:
-        player = self.manager.require_same_channel(ctx.guild, self._member(ctx))
-        session = self.manager.session(ctx.guild.id)
-        session.queue.jump(posicion)
-        session.force_advance = True
-        await player.skip(force=True)
+        await self.manager.jump(ctx.guild, self._member(ctx), posicion)
         await ctx.send(f"⏩ Saltando a la posición {posicion}.")
 
     @commands.hybrid_command(name="seek", description="Busca un punto de la canción")
     @commands.guild_only()
     async def seek(self, ctx: commands.Context, tiempo: str) -> None:
-        player = self.manager.require_same_channel(ctx.guild, self._member(ctx))
         track = self.manager.session(ctx.guild.id).queue.current
         if not track or track.is_stream:
             raise MusicError("No se puede buscar dentro de un stream en vivo.")
         milliseconds = parse_time(tiempo) * 1000
         if milliseconds >= track.length:
             raise MusicError(f"La canción termina en {format_time(track.length)}.")
-        await player.seek(milliseconds)
+        await self.manager.seek(ctx.guild, self._member(ctx), milliseconds)
         await ctx.send(f"⏩ Posición: **{format_time(milliseconds)}**.")
 
     @commands.hybrid_command(name="volume", aliases=["vol"], description="Consulta o cambia el volumen")
     @commands.guild_only()
     async def volume(self, ctx: commands.Context, volumen: int | None = None) -> None:
-        player = self.manager.require_same_channel(ctx.guild, self._member(ctx))
+        self.manager.require_same_channel(ctx.guild, self._member(ctx))
         session = self.manager.session(ctx.guild.id)
         if volumen is None:
             await ctx.send(f"🔊 Volumen actual: **{session.volume}%**.")
             return
-        if not 1 <= volumen <= 150:
-            raise MusicError("El volumen debe estar entre 1 y 150.")
-        session.volume = volumen
-        await player.set_volume(volumen)
+        await self.manager.set_volume(ctx.guild, self._member(ctx), volumen)
         await ctx.send(f"🔊 Volumen cambiado a **{volumen}%**.")
 
     @commands.hybrid_command(name="loop", description="Configura repetición de canción o cola")
@@ -262,11 +239,13 @@ class MusicCog(commands.Cog, name="Música"):
         app_commands.Choice(name="Cola", value="queue"),
     ])
     async def loop(self, ctx: commands.Context, modo: str) -> None:
-        self.manager.session(ctx.guild.id).queue.loop_mode = LoopMode(modo)
+        self.manager.require_same_channel(ctx.guild, self._member(ctx))
+        await self.manager.set_loop(ctx.guild.id, LoopMode(modo))
         await ctx.send(f"🔁 Loop configurado en `{modo}`.")
 
     @commands.hybrid_command(name="autoplay", description="Activa o desactiva recomendaciones automáticas")
     @commands.guild_only()
     async def autoplay(self, ctx: commands.Context, activo: bool) -> None:
-        self.manager.session(ctx.guild.id).queue.autoplay = activo
+        self.manager.require_same_channel(ctx.guild, self._member(ctx))
+        await self.manager.set_autoplay(ctx.guild.id, activo)
         await ctx.send(f"♾️ Autoplay **{'activado' if activo else 'desactivado'}**.")

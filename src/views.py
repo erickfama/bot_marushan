@@ -25,39 +25,33 @@ class PlayerControls(discord.ui.View):
     @discord.ui.button(emoji="⏯️", style=discord.ButtonStyle.primary)
     async def pause_resume(self, interaction: discord.Interaction, _: discord.ui.Button[discord.ui.View]) -> None:
         player = interaction.guild.voice_client
-        await player.pause(not player.paused)
+        await self.manager.pause(interaction.guild, interaction.user, not player.paused)
         await interaction.response.send_message("Pausa alternada.", ephemeral=True)
 
     @discord.ui.button(emoji="⏮️", style=discord.ButtonStyle.secondary)
     async def previous(self, interaction: discord.Interaction, _: discord.ui.Button[discord.ui.View]) -> None:
-        player: wavelink.Player = interaction.guild.voice_client
-        session = self.manager.session(interaction.guild.id)
-        track = session.queue.previous()
-        if not track:
+        try:
+            await self.manager.previous(interaction.guild, interaction.user)
+        except MusicError:
             await interaction.response.send_message("No hay una canción anterior.", ephemeral=True)
             return
-        session.ignore_end_events += 1
-        await player.play(track, volume=session.volume)
         await interaction.response.send_message("Reproduciendo la canción anterior.", ephemeral=True)
 
     @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary)
     async def skip(self, interaction: discord.Interaction, _: discord.ui.Button[discord.ui.View]) -> None:
-        self.manager.session(interaction.guild.id).force_advance = True
-        await interaction.guild.voice_client.skip(force=True)
+        await self.manager.skip(interaction.guild, interaction.user)
         await interaction.response.send_message("Canción omitida.", ephemeral=True)
 
     @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.danger)
     async def stop(self, interaction: discord.Interaction, _: discord.ui.Button[discord.ui.View]) -> None:
-        player: wavelink.Player = interaction.guild.voice_client
-        self.manager.session(interaction.guild.id).queue.reset()
-        await player.stop(force=True)
+        await self.manager.stop(interaction.guild, interaction.user)
         await interaction.response.send_message("Reproducción y cola detenidas.", ephemeral=True)
 
     @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.secondary)
     async def loop(self, interaction: discord.Interaction, _: discord.ui.Button[discord.ui.View]) -> None:
         queue = self.manager.session(interaction.guild.id).queue
         modes = [LoopMode.OFF, LoopMode.TRACK, LoopMode.QUEUE]
-        queue.loop_mode = modes[(modes.index(queue.loop_mode) + 1) % len(modes)]
+        await self.manager.set_loop(interaction.guild.id, modes[(modes.index(queue.loop_mode) + 1) % len(modes)])
         await interaction.response.send_message(f"Loop: `{queue.loop_mode.value}`.", ephemeral=True)
 
     @discord.ui.button(label="Cola", emoji="📜", style=discord.ButtonStyle.secondary)

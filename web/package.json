@@ -1,0 +1,21 @@
+{
+  "name": "bot-nissin-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b && vite build",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "vite": "6.4.3",
+    "typescript": "5.8.3",
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.1.2",
+    "@types/react-dom": "19.1.2",
+    "vitest": "4.1.11"
+  }
+}

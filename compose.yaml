@@ -51,7 +51,7 @@ services:
     build: .
     restart: unless-stopped
     init: true
-    mem_limit: 192m
+    mem_limit: 256m
     depends_on:
       lavalink:
         condition: service_healthy
@@ -68,17 +68,27 @@ services:
       MAX_QUEUE_SIZE: ${MAX_QUEUE_SIZE:-500}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       BOT_DISPLAY_NAME: ${BOT_DISPLAY_NAME:-Bot Nissin}
+      WEB_HOST: 0.0.0.0
+      WEB_PORT: 8090
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://127.0.0.1:8090}
+      DISCORD_OAUTH_CLIENT_ID: ${DISCORD_OAUTH_CLIENT_ID:-}
+      DISCORD_OAUTH_CLIENT_SECRET_FILE: /run/secrets/discord_oauth_client_secret
+      WEB_SESSION_SECRET_FILE: /run/secrets/web_session_secret
     secrets:
       - discord_token
       - lavalink_password
       - spotify_client_secret
       - spotify_refresh_token
+      - discord_oauth_client_secret
+      - web_session_secret
+    ports:
+      - "127.0.0.1:8090:8090"
     volumes:
       - ./media:/media:ro
     networks:
       - music-internal
     healthcheck:
-      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('lavalink', 2333), 3).close()"]
+      test: ["CMD", "python", "-c", "import socket,urllib.request; socket.create_connection(('lavalink',2333),3).close(); urllib.request.urlopen('http://127.0.0.1:8090/health',timeout=3).read()"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -101,3 +111,7 @@ secrets:
     file: ./secrets/spotify_client_secret.txt
   spotify_refresh_token:
     file: ./secrets/spotify_refresh_token.txt
+  discord_oauth_client_secret:
+    file: ./secrets/discord_oauth_client_secret.txt
+  web_session_secret:
+    file: ./secrets/web_session_secret.txt

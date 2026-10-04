@@ -175,8 +175,19 @@ class SpotifyClient:
                     self._expires_at = 0
                     continue
                 if response.status == 429 and attempt < 2:
-                    await asyncio.sleep(min(int(response.headers.get("Retry-After", "1")), 5))
+                    try:
+                        payload = await response.json()
+                    except (aiohttp.ContentTypeError, ValueError):
+                        payload = {}
+                    if payload.get("reason") == "QUOTA_EXCEEDED":
+                        raise SpotifyError("Se agotó temporalmente la cuota de Spotify; inténtalo más tarde")
+                    await asyncio.sleep(min(int(response.headers.get("Retry-After", "1")), 10))
                     continue
+                if response.status == 403 and "/playlists/" in url:
+                    raise SpotifyError(
+                        "Spotify solo permite importar playlists propias o colaborativas. "
+                        "Copia esa playlist a una lista de tu cuenta e inténtalo de nuevo."
+                    )
                 if response.status >= 400:
                     detail = (await response.text())[:300]
                     raise SpotifyError(f"Spotify respondió {response.status}: {detail}")

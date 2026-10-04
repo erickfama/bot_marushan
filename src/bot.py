@@ -11,6 +11,7 @@ from src.config import Settings
 from src.music_cog import MusicCog
 from src.player import MusicManager
 from src.spotify import SpotifyClient
+from src.web import WebServer
 
 
 class MarushanBot(commands.Bot):
@@ -26,6 +27,7 @@ class MarushanBot(commands.Bot):
             settings.spotify_refresh_token or "",
         )
         self.music = MusicManager(self, settings, spotify)
+        self.web = WebServer(self, self.music, settings)
 
     async def on_interaction(self, interaction: discord.Interaction) -> None:
         if interaction.type is discord.InteractionType.application_command:
@@ -51,8 +53,10 @@ class MarushanBot(commands.Bot):
         guild = discord.Object(id=self.settings.discord_guild_id)
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
+        await self.web.start()
 
     async def close(self) -> None:
+        await self.web.close()
         await self.music.close()
         await super().close()
 

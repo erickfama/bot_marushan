@@ -5,6 +5,36 @@ import pytest
 from src.spotify import SpotifyClient, SpotifyError, is_spotify_url
 
 
+class FakeResponse:
+    def __init__(self, status: int, payload: dict | None = None, text: str = "") -> None:
+        self.status = status
+        self.payload = payload or {}
+        self._text = text
+        self.headers: dict[str, str] = {}
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    async def json(self):
+        return self.payload
+
+    async def text(self):
+        return self._text
+
+
+class FakeSession:
+    closed = False
+
+    def __init__(self, response: FakeResponse) -> None:
+        self.response = response
+
+    def request(self, *_args, **_kwargs):
+        return self.response
+
+
 def test_detects_spotify_urls_and_uris() -> None:
     assert is_spotify_url("https://open.spotify.com/track/abc123")
     assert is_spotify_url("https://open.spotify.com/intl-es/track/abc123?si=test")
@@ -77,3 +107,22 @@ async def test_public_playlist_explains_oauth_requirement() -> None:
     client = SpotifyClient()
     with pytest.raises(SpotifyError, match="OAuth"):
         await client.resolve("https://open.spotify.com/playlist/abc123")
+
+
+@pytest.mark.asyncio
+async def test_owned_playlist_error_is_explained_on_403() -> None:
+    client = SpotifyClient("id", "secret", "refresh", session=FakeSession(FakeResponse(403)))
+    client._access_token = "token"
+    client._expires_at = float("inf")
+    with pytest.raises(SpotifyError, match="propias o colaborativas"):
+        await client._request("GET", "https://api.spotify.com/v1/playlists/abc/items")
+
+
+@pytest.mark.asyncio
+async def test_quota_exceeded_is_not_retried() -> None:
+    response = FakeResponse(429, {"reason": "QUOTA_EXCEEDED"})
+    client = SpotifyClient("id", "secret", "refresh", session=FakeSession(response))
+    client._access_token = "token"
+    client._expires_at = float("inf")
+    with pytest.raises(SpotifyError, match="cuota"):
+        await client._request("GET", "https://api.spotify.com/v1/tracks/abc")

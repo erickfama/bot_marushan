@@ -1,5 +1,12 @@
 FROM denoland/deno:2.5.2 AS deno
 
+FROM node:22-alpine AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
 FROM python:3.13.7-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -16,6 +23,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
 
 COPY --chown=bot:bot src ./src
 COPY --chown=bot:bot scripts ./scripts
+COPY --from=web --chown=bot:bot /web/dist ./web_dist
 
 USER bot
 CMD ["python", "-m", "src.bot"]
