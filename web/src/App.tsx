@@ -8,7 +8,7 @@ type VoiceChannel = { id: string; name: string; members: number; userHere: boole
 
 const emptyState: PlayerState = { connected: false, playing: false, paused: false, position: 0, volume: 75, loop: "off", autoplay: false, queue: [], historyCount: 0, spotify: { configured: false }, canControl: false, imports: [] };
 
-function duration(ms: number) {
+export function duration(ms: number) {
   const seconds = Math.max(0, Math.floor(ms / 1000));
   const minutes = Math.floor(seconds / 60);
   return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
