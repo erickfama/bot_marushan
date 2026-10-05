@@ -109,12 +109,12 @@ export default function App() {
 
   const activeImports = useMemo(() => state.imports.filter((job) => job.status !== "complete" || job.error), [state.imports]);
 
-  if (loading) return <main className="center"><div className="spinner" /><p>Conectando con Bot Nissin…</p></main>;
+  if (loading) return <main className="center"><div className="spinner" /><p>Conectando con Bot Marushan…</p></main>;
   if (!user) return <main className="login"><div className="login-card"><span className="brand-mark">N</span><p className="eyebrow">REPRODUCTOR PERSONAL</p><h1>Tu música,<br />en Discord.</h1><p>Controla el canal, importa playlists y mantén la fiesta desde cualquier pantalla.</p><a className="discord-button" href="/auth/discord">Entrar con Discord</a><small>Solo miembros del servidor autorizado.</small></div></main>;
 
   return <div className="app-shell">
     <header>
-      <div className="brand"><span className="brand-mark">N</span><div><strong>Bot Nissin</strong><small>{state.connected ? `En ${state.channel?.name}` : "Sin conexión de voz"}</small></div></div>
+      <div className="brand"><span className="brand-mark">M</span><div><strong>Bot Marushan</strong><small>{state.connected ? `En ${state.channel?.name}` : "Sin conexión de voz"}</small></div></div>
       <div className="user"><div><strong>{user.name}</strong><small>{state.canControl ? "Listo para controlar" : "Entra al canal seleccionado"}</small></div>{user.avatar ? <img src={user.avatar} alt="" /> : <span className="avatar">{user.name[0]}</span>}</div>
     </header>
 
@@ -122,7 +122,7 @@ export default function App() {
       <section className="player-card">
         <div className="artwork">{state.current?.artwork ? <img src={state.current.artwork} alt="Portada" /> : <div className="vinyl">♪</div>}</div>
         <div className="now-playing">
-          <p className="eyebrow">{state.current ? "REPRODUCIENDO AHORA" : "BOT NISSIN"}</p>
+          <p className="eyebrow">{state.current ? "REPRODUCIENDO AHORA" : "BOT MARUSHAN"}</p>
           <h1>{state.current?.title || "La cola está esperando"}</h1>
           <p className="artist">{state.current?.author || "Agrega una canción o playlist"}</p>
           {state.current?.source === "spotify" && <a className="source-link" href={state.current.uri} target="_blank" rel="noreferrer">Spotify ↗</a>}
@@ -155,6 +155,6 @@ export default function App() {
         <div className="queue-list">{state.queue.length === 0 ? <div className="empty"><span>♫</span><p>La próxima canción aparecerá aquí.</p></div> : state.queue.map((track) => <article key={`${track.position}-${track.title}`} draggable onDragStart={() => { dragged.current = track.position || null; }} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (dragged.current && track.position && dragged.current !== track.position) mutate("/api/queue/move", "POST", { origin: dragged.current, destination: track.position }); }}><span className="handle">⠿</span><span className="index">{String(track.position).padStart(2, "0")}</span>{track.artwork ? <img src={track.artwork} alt="" /> : <span className="mini-art">♪</span>}<div className="track-copy"><strong>{track.title}</strong><small>{track.author} · Solicitó {track.requester}</small></div><span className="track-duration">{track.stream ? "EN VIVO" : duration(track.duration)}</span><button title="Reproducir ahora" onClick={() => mutate(`/api/queue/jump/${track.position}`)}>▶</button><button title="Eliminar" onClick={() => mutate(`/api/queue/${track.position}`, "DELETE")}>×</button></article>)}</div>
       </section>
     </main>
-    <footer><span>Bot Nissin · Audio en Discord</span><button onClick={logout}>Cerrar sesión</button></footer>
+    <footer><span>Bot Marushan · Audio en Discord</span><button onClick={logout}>Cerrar sesión</button></footer>
   </div>;
 }

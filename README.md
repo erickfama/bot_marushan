@@ -1,4 +1,4 @@
-# Marushan Music Bot
+# Bot Marushan
 
 Bot musical personal para Discord. Usa `discord.py` y Wavelink para controlar un nodo Lavalink v4. Las búsquedas y enlaces de YouTube aportan el audio; Spotify se usa únicamente como catálogo para importar canciones, álbumes y playlists privadas. El bot resuelve el stream justo antes de reproducirlo con `yt-dlp` y Deno, mientras que un servicio interno `yt-cipher` respalda la integración de Lavalink. No se usan cookies personales.
 

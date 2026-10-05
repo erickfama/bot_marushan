@@ -25,7 +25,7 @@ await writeFile(
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#101018" />
-    <title>Bot Nissin</title>
+    <title>Bot Marushan</title>
     <link rel="stylesheet" href="/assets/app.css" />
   </head>
   <body>

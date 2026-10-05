@@ -35,7 +35,7 @@ class Settings:
     idle_timeout_seconds: int = 600
     max_queue_size: int = 500
     log_level: str = "INFO"
-    bot_display_name: str = "Bot Nissin"
+    bot_display_name: str = "Bot Marushan"
     web_host: str = "0.0.0.0"
     web_port: int = 8090
     public_base_url: str = "http://127.0.0.1:8090"
@@ -71,7 +71,7 @@ class Settings:
             idle_timeout_seconds=_integer("IDLE_TIMEOUT_SECONDS", 600),
             max_queue_size=queue_size,
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
-            bot_display_name=os.getenv("BOT_DISPLAY_NAME", "Bot Nissin").strip() or "Bot Nissin",
+            bot_display_name=os.getenv("BOT_DISPLAY_NAME", "Bot Marushan").strip() or "Bot Marushan",
             web_host=os.getenv("WEB_HOST", "0.0.0.0"),
             web_port=_integer("WEB_PORT", 8090),
             public_base_url=os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8090").rstrip("/"),

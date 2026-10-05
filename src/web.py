@@ -64,7 +64,7 @@ class WebServer:
         self.bot = bot
         self.manager = manager
         self.settings = settings
-        self.app = FastAPI(title="Bot Nissin", docs_url=None, redoc_url=None, openapi_url=None)
+        self.app = FastAPI(title="Bot Marushan", docs_url=None, redoc_url=None, openapi_url=None)
         self.sessions: dict[str, WebSession] = {}
         self.oauth_states: dict[str, float] = {}
         self.imports: dict[str, dict[str, Any]] = {}
@@ -87,7 +87,7 @@ class WebServer:
             access_log=False,
         )
         self._server = uvicorn.Server(config)
-        self._task = asyncio.create_task(self._server.serve(), name="bot-nissin-web")
+        self._task = asyncio.create_task(self._server.serve(), name="bot-marushan-web")
 
     async def close(self) -> None:
         self.manager.remove_listener(self.broadcast)
@@ -203,7 +203,7 @@ class WebServer:
             )
             response = RedirectResponse("/", status_code=303)
             response.set_cookie(
-                "nissin_session",
+                "marushan_session",
                 session_id,
                 max_age=43_200,
                 secure=self.settings.public_base_url.startswith("https://"),
@@ -219,7 +219,7 @@ class WebServer:
             self._verify_mutation(request, session, x_csrf_token)
             self.sessions.pop(session_id, None)
             response = JSONResponse({"ok": True})
-            response.delete_cookie("nissin_session", path="/")
+            response.delete_cookie("marushan_session", path="/")
             return response
 
         @app.get("/api/me")
@@ -387,7 +387,7 @@ class WebServer:
             if origin and origin != self.settings.public_base_url:
                 await websocket.close(code=4403)
                 return
-            session_id = websocket.cookies.get("nissin_session", "")
+            session_id = websocket.cookies.get("marushan_session", "")
             session = self.sessions.get(session_id)
             if not session or session.expires_at < time.monotonic():
                 await websocket.close(code=4401)
@@ -469,7 +469,7 @@ class WebServer:
             raise HTTPException(403, "Ya no perteneces al servidor autorizado") from exc
 
     def _require_session(self, request: Request) -> tuple[str, WebSession]:
-        session_id = request.cookies.get("nissin_session", "")
+        session_id = request.cookies.get("marushan_session", "")
         session = self.sessions.get(session_id)
         if not session or session.expires_at < time.monotonic():
             self.sessions.pop(session_id, None)
