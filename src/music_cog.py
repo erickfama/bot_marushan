@@ -16,6 +16,19 @@ from src.views import PlayerControls
 LOGGER = logging.getLogger(__name__)
 
 
+def unwrap_command_error(error: BaseException) -> BaseException:
+    """Return the original exception hidden by Discord command wrappers."""
+    current = error
+    seen: set[int] = set()
+    while id(current) not in seen:
+        seen.add(id(current))
+        original = getattr(current, "original", None)
+        if not isinstance(original, BaseException) or original is current:
+            break
+        current = original
+    return current
+
+
 def track_name(track: wavelink.Playable) -> str:
     spotify_title = getattr(track.extras, "spotify_title", None)
     spotify_artists = getattr(track.extras, "spotify_artists", None)
@@ -28,7 +41,7 @@ class MusicCog(commands.Cog, name="Música"):
         self.manager = manager
 
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
-        original = getattr(error, "original", error)
+        original = unwrap_command_error(error)
         if isinstance(original, (MusicError, ValueError, IndexError)):
             await ctx.send(f"⚠️ {original}", ephemeral=bool(ctx.interaction))
             return

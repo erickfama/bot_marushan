@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.config import Settings
-from src.player import MusicManager
+from src.player import MusicError, MusicManager
 from src.spotify import SpotifyTrack
 
 
@@ -65,3 +65,43 @@ async def test_spotify_resolution_counts_omitted_tracks(monkeypatch: pytest.Monk
     )
     assert len(tracks) == 4
     assert omitted == 2
+
+
+@pytest.mark.asyncio
+async def test_youtube_search_falls_back_to_youtube_music(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = MusicManager(SimpleNamespace(), Settings(discord_token="token", discord_guild_id=1))
+    requester = SimpleNamespace(id=1, display_name="User")
+    track = SimpleNamespace(title="Te quiero puta!", author="Rammstein", extras=None)
+    calls: list[object] = []
+
+    async def fake_search(_query: str, *, source):
+        calls.append(source)
+        return [] if source is not wavelink.TrackSource.YouTubeMusic else [track]
+
+    import wavelink
+
+    monkeypatch.setattr(wavelink.Playable, "search", fake_search)
+    tracks, omitted = await manager.resolve("te quiero puta", requester)
+
+    assert tracks == [track]
+    assert omitted == 0
+    assert calls == [wavelink.TrackSource.YouTube, wavelink.TrackSource.YouTubeMusic]
+    assert track.extras["requester_id"] == requester.id
+
+
+@pytest.mark.asyncio
+async def test_direct_url_does_not_use_search_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = MusicManager(SimpleNamespace(), Settings(discord_token="token", discord_guild_id=1))
+    calls: list[object] = []
+
+    async def fake_search(_query: str, *, source):
+        calls.append(source)
+        return []
+
+    import wavelink
+
+    monkeypatch.setattr(wavelink.Playable, "search", fake_search)
+    with pytest.raises(MusicError, match="No encontré resultados reproducibles"):
+        await manager.resolve("https://youtu.be/missing", SimpleNamespace(id=1, display_name="User"))
+
+    assert calls == [None]

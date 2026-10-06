@@ -149,12 +149,21 @@ class MusicManager:
             return [track for track in results if track is not None], omitted
 
         query = self.youtube.without_radio(query)
-        source = None if query.startswith(("http://", "https://")) else wavelink.TrackSource.YouTube
+        is_url = query.startswith(("http://", "https://"))
+        source = None if is_url else wavelink.TrackSource.YouTube
         try:
             results = await wavelink.Playable.search(query, source=source)
         except Exception as exc:
             raise MusicError("YouTube no pudo procesar esa búsqueda o playlist.") from exc
         tracks = self._search_tracks(results)
+        if not tracks and not is_url:
+            LOGGER.info("youtube_search_empty_falling_back_to_music query=%r", query)
+            try:
+                results = await wavelink.Playable.search(query, source=wavelink.TrackSource.YouTubeMusic)
+            except Exception:
+                LOGGER.exception("youtube_music_fallback_failed query=%r", query)
+            else:
+                tracks = self._search_tracks(results)
         if not tracks:
             raise MusicError("No encontré resultados reproducibles.")
         if not isinstance(results, wavelink.Playlist):

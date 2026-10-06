@@ -38,7 +38,6 @@ class MarushanBot(commands.Bot):
                 interaction.guild_id,
                 interaction.user.id,
             )
-        await super().on_interaction(interaction)
 
     async def setup_hook(self) -> None:
         node = wavelink.Node(
