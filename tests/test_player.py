@@ -105,3 +105,73 @@ async def test_direct_url_does_not_use_search_fallback(monkeypatch: pytest.Monke
         await manager.resolve("https://youtu.be/missing", SimpleNamespace(id=1, display_name="User"))
 
     assert calls == [None]
+
+
+@pytest.mark.asyncio
+async def test_play_track_sends_original_track_to_lavalink() -> None:
+    manager = MusicManager(SimpleNamespace(), Settings(discord_token="token", discord_guild_id=1))
+    track = SimpleNamespace(title="Song")
+    played: list[tuple[object, int]] = []
+
+    class FakePlayer:
+        guild = SimpleNamespace(id=1)
+
+        async def play(self, item, *, volume: int):
+            played.append((item, volume))
+
+    await manager.play_track(FakePlayer(), track)  # type: ignore[arg-type]
+
+    assert played == [(track, 75)]
+
+
+@pytest.mark.asyncio
+async def test_play_next_skips_failed_track_and_starts_following(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = MusicManager(SimpleNamespace(), Settings(discord_token="token", discord_guild_id=1))
+    first = SimpleNamespace(title="Broken")
+    second = SimpleNamespace(title="Working")
+    session = manager.session(1)
+    session.queue.add([first, second])
+    attempts: list[object] = []
+
+    async def fake_play(_player, track):
+        attempts.append(track)
+        if track is first:
+            raise RuntimeError("source failed")
+
+    monkeypatch.setattr(manager, "play_track", fake_play)
+    player = SimpleNamespace(guild=SimpleNamespace(id=1))
+
+    started = await manager.play_next(player)  # type: ignore[arg-type]
+
+    assert started is second
+    assert attempts == [first, second]
+    assert list(session.queue.history) == [first]
+    assert session.queue.current is second
+
+
+@pytest.mark.asyncio
+async def test_enqueue_does_not_confirm_when_every_track_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = MusicManager(SimpleNamespace(), Settings(discord_token="token", discord_guild_id=1))
+    track = SimpleNamespace(title="Broken")
+    player = SimpleNamespace(guild=SimpleNamespace(id=1), playing=False)
+
+    async def fake_ensure_player(*_args, **_kwargs):
+        return player
+
+    async def fake_resolve(*_args, **_kwargs):
+        return [track], 0
+
+    async def fake_play(*_args, **_kwargs):
+        raise RuntimeError("source failed")
+
+    monkeypatch.setattr(manager, "ensure_player", fake_ensure_player)
+    monkeypatch.setattr(manager, "resolve", fake_resolve)
+    monkeypatch.setattr(manager, "play_track", fake_play)
+
+    with pytest.raises(MusicError, match="no pudo iniciar ninguna pista"):
+        await manager.enqueue(
+            SimpleNamespace(id=1),
+            SimpleNamespace(id=1, display_name="User"),
+            10,
+            "Broken",
+        )

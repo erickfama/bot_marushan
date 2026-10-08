@@ -240,36 +240,76 @@ class MusicManager:
             except QueueFullError as exc:
                 raise MusicError(str(exc)) from exc
             should_start = session.queue.current is None and not player.playing
+        started_track: wavelink.Playable | None = None
         if should_start:
-            await self.play_next(player)
+            started_track = await self.play_next(player)
+            if started_track is None:
+                raise MusicError("Encontré resultados, pero la fuente de audio no pudo iniciar ninguna pista.")
         await self.emit("queue")
-        return accepted, misses + max(0, len(tracks) - accepted), tracks[0]
+        return accepted, misses + max(0, len(tracks) - accepted), started_track or tracks[0]
 
-    async def play_next(self, player: wavelink.Player, *, failed: bool = False) -> None:
+    async def play_next(
+        self,
+        player: wavelink.Player,
+        *,
+        failed: bool = False,
+        announce_current_failure: bool = False,
+    ) -> wavelink.Playable | None:
         session = self.session(player.guild.id)
+        failed_tracks: list[wavelink.Playable] = []
+        started_track: wavelink.Playable | None = None
         async with session.lock:
             if session.queue.current is not None:
+                if failed and announce_current_failure:
+                    failed_tracks.append(session.queue.current)
                 session.queue.finish_current(failed=failed)
-            next_track = session.queue.take_next()
-            if next_track is None and session.queue.autoplay:
-                next_track = await self._autoplay_track(player)
-                session.queue.current = next_track
-            if next_track is None:
-                self._schedule_idle(player, session)
-                await self.emit("player")
-                return
-            self._cancel_idle(session)
-            try:
-                await self.play_track(player, next_track)
-            except Exception:
-                LOGGER.exception("track_play_failed guild_id=%s title=%r", player.guild.id, next_track.title)
-                session.queue.finish_current(failed=True)
-                asyncio.create_task(self.play_next(player))
+            autoplay_attempted = False
+            while started_track is None:
+                next_track = session.queue.take_next()
+                if next_track is None and session.queue.autoplay and not autoplay_attempted:
+                    autoplay_attempted = True
+                    try:
+                        next_track = await self._autoplay_track(player)
+                    except Exception:
+                        LOGGER.exception("autoplay_resolution_failed guild_id=%s", player.guild.id)
+                    session.queue.current = next_track
+                if next_track is None:
+                    self._schedule_idle(player, session)
+                    break
+                self._cancel_idle(session)
+                try:
+                    await self.play_track(player, next_track)
+                except Exception:
+                    LOGGER.exception("track_play_failed guild_id=%s title=%r", player.guild.id, next_track.title)
+                    failed_tracks.append(next_track)
+                    session.queue.finish_current(failed=True)
+                    continue
+                started_track = next_track
+        if failed_tracks:
+            await self._announce_failed_tracks(session, failed_tracks)
         await self.emit("player")
+        return started_track
 
     async def play_track(self, player: wavelink.Player, track: wavelink.Playable) -> None:
-        playable = await self.youtube.playable(track)
-        await player.play(playable, volume=self.session(player.guild.id).volume)
+        await player.play(track, volume=self.session(player.guild.id).volume)
+
+    async def _announce_failed_tracks(
+        self, session: GuildSession, tracks: list[wavelink.Playable]
+    ) -> None:
+        if session.text_channel_id is None:
+            return
+        get_channel = getattr(self.bot, "get_channel", None)
+        channel = get_channel(session.text_channel_id) if callable(get_channel) else None
+        if channel is None or not hasattr(channel, "send"):
+            return
+        if len(tracks) == 1:
+            message = f"⚠️ Omití **{tracks[0].title}** porque la fuente de audio falló."
+        else:
+            message = f"⚠️ Omití **{len(tracks)}** pistas porque la fuente de audio falló."
+        try:
+            await channel.send(message)
+        except discord.HTTPException:
+            LOGGER.exception("track_failure_announcement_failed channel_id=%s", session.text_channel_id)
 
     async def _autoplay_track(self, player: wavelink.Player) -> wavelink.Playable | None:
         session = self.session(player.guild.id)
@@ -292,7 +332,12 @@ class MusicManager:
         reason_text = str(reason).lower()
         force_advance = session.force_advance
         session.force_advance = False
-        await self.play_next(player, failed=force_advance or "exception" in reason_text or "stuck" in reason_text)
+        source_failed = any(value in reason_text for value in ("exception", "stuck", "load_failed", "loadfailed"))
+        await self.play_next(
+            player,
+            failed=force_advance or source_failed,
+            announce_current_failure=source_failed,
+        )
 
     async def pause(self, guild: discord.Guild, member: discord.Member, paused: bool) -> None:
         player = self.require_same_channel(guild, member)
