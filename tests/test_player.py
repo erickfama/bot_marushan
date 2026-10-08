@@ -68,6 +68,63 @@ async def test_spotify_resolution_counts_omitted_tracks(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
+async def test_spotify_track_falls_back_to_youtube_music_when_youtube_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = MusicManager(SimpleNamespace(), Settings(discord_token="token", discord_guild_id=1))
+    requester = SimpleNamespace(id=1, display_name="User")
+    wanted = SpotifyTrack(
+        title="Te lo agradezco, pero no",
+        artists=("Alejandro Sanz", "Shakira"),
+        duration_ms=273_000,
+        url="https://open.spotify.com/track/example",
+    )
+    candidate = SimpleNamespace(
+        title="Te Lo Agradezco, Pero No",
+        author="Alejandro Sanz, Shakira",
+        length=273_000,
+        extras=None,
+    )
+    calls: list[object] = []
+
+    async def fake_search(_query: str, *, source):
+        calls.append(source)
+        return [] if source is wavelink.TrackSource.YouTube else [candidate]
+
+    import wavelink
+
+    monkeypatch.setattr(wavelink.Playable, "search", fake_search)
+
+    result = await manager._resolve_spotify_track(wanted, requester)
+
+    assert result is candidate
+    assert calls == [wavelink.TrackSource.YouTube, wavelink.TrackSource.YouTubeMusic]
+    assert candidate.extras["spotify_url"] == wanted.url
+
+
+@pytest.mark.asyncio
+async def test_spotify_track_retries_weak_youtube_match_on_youtube_music(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = MusicManager(SimpleNamespace(), Settings(discord_token="token", discord_guild_id=1))
+    requester = SimpleNamespace(id=1, display_name="User")
+    wanted = SpotifyTrack(title="Creep", artists=("Radiohead",), duration_ms=238_000, url="spotify")
+    weak = SimpleNamespace(title="Unrelated song", author="Someone", length=100_000, extras=None)
+    strong = SimpleNamespace(title="Creep", author="Radiohead", length=238_000, extras=None)
+
+    async def fake_search(_query: str, *, source):
+        return [weak] if source is wavelink.TrackSource.YouTube else [strong]
+
+    import wavelink
+
+    monkeypatch.setattr(wavelink.Playable, "search", fake_search)
+
+    result = await manager._resolve_spotify_track(wanted, requester)
+
+    assert result is strong
+
+
+@pytest.mark.asyncio
 async def test_youtube_search_falls_back_to_youtube_music(monkeypatch: pytest.MonkeyPatch) -> None:
     manager = MusicManager(SimpleNamespace(), Settings(discord_token="token", discord_guild_id=1))
     requester = SimpleNamespace(id=1, display_name="User")

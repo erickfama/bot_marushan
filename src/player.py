@@ -178,6 +178,10 @@ class MusicManager:
         results = await wavelink.Playable.search(wanted.search_query, source=wavelink.TrackSource.YouTube)
         candidates = self._search_tracks(results)[:5]
         if not candidates:
+            LOGGER.info("spotify_youtube_search_empty_falling_back_to_music title=%r", wanted.title)
+            results = await wavelink.Playable.search(wanted.search_query, source=wavelink.TrackSource.YouTubeMusic)
+            candidates = self._search_tracks(results)[:5]
+        if not candidates:
             return None
         scored = sorted(
             ((match_score(wanted.title, " ".join(wanted.artists), wanted.duration_ms, item.title, item.author, item.length), item) for item in candidates),
@@ -185,6 +189,32 @@ class MusicManager:
             reverse=True,
         )
         score, chosen = scored[0]
+        if score < 0.42:
+            LOGGER.info("spotify_youtube_match_weak_trying_music title=%r score=%.2f", wanted.title, score)
+            music_results = await wavelink.Playable.search(
+                wanted.search_query, source=wavelink.TrackSource.YouTubeMusic
+            )
+            music_candidates = self._search_tracks(music_results)[:5]
+            if music_candidates:
+                scored = sorted(
+                    (
+                        (
+                            match_score(
+                                wanted.title,
+                                " ".join(wanted.artists),
+                                wanted.duration_ms,
+                                item.title,
+                                item.author,
+                                item.length,
+                            ),
+                            item,
+                        )
+                        for item in [*candidates, *music_candidates]
+                    ),
+                    key=lambda pair: pair[0],
+                    reverse=True,
+                )
+                score, chosen = scored[0]
         if score < 0.42:
             LOGGER.warning("spotify_match_rejected title=%r score=%.2f", wanted.title, score)
             return None
