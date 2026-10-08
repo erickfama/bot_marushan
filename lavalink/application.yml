@@ -8,8 +8,11 @@ spring:
 
 lavalink:
   plugins:
-    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.2"
-      snapshot: false
+    # 1.18.2 cannot play anonymously from many datacenter IPs. Pin the
+    # upstream snapshot that restores the iOS playback client and includes
+    # the latest cipher/stream fixes. Keep this immutable until 1.18.3+ ships.
+    - dependency: "dev.lavalink.youtube:youtube-plugin:2be8e542d3f6f178e048dca565892684c2e40177"
+      snapshot: true
   server:
     password: ${LAVALINK_PASSWORD:youshallnotpass}
     sources:
@@ -40,6 +43,7 @@ plugins:
       url: "http://yt-cipher:8001"
       userAgent: "marushan-bot"
     clients:
+      - IOS
       - WEB
       - WEBEMBEDDED
       - MWEB
