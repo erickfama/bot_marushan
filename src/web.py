@@ -91,7 +91,9 @@ class WebServer:
             self.app,
             host=self.settings.web_host,
             port=self.settings.web_port,
-            log_level=self.settings.log_level.casefold(),
+            # Application events keep the configured log level. Uvicorn's INFO
+            # websocket lifecycle messages are extremely noisy for stale tabs.
+            log_level="warning",
             access_log=False,
         )
         self._server = uvicorn.Server(config)
