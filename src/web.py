@@ -17,7 +17,15 @@ from urllib.parse import urlencode
 import aiohttp
 import discord
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
@@ -98,7 +106,7 @@ class WebServer:
         if self._task:
             try:
                 await asyncio.wait_for(self._task, timeout=10)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+            except (TimeoutError, asyncio.CancelledError):
                 self._task.cancel()
 
     async def broadcast(self, event: str = "state") -> None:
@@ -130,17 +138,25 @@ class WebServer:
             return response
 
         @app.get("/health")
-        async def health() -> dict[str, Any]:
-            return {
-                "status": "ok",
-                "discord": self.bot.is_ready(),
-                "oauthConfigured": self.settings.discord_oauth_enabled,
-            }
+        async def health() -> JSONResponse:
+            discord_ready = self.bot.is_ready()
+            lavalink_ready = self.manager.lavalink_connected()
+            healthy = discord_ready and lavalink_ready
+            return JSONResponse(
+                {
+                    "status": "ok" if healthy else "degraded",
+                    "discord": discord_ready,
+                    "lavalink": lavalink_ready,
+                    "oauthConfigured": self.settings.discord_oauth_enabled,
+                },
+                status_code=200 if healthy else 503,
+            )
 
         @app.get("/auth/discord")
         async def discord_login() -> Response:
             if not self.settings.discord_oauth_enabled:
                 return HTMLResponse("Discord OAuth aún no está configurado.", status_code=503)
+            self._prune_runtime_state()
             nonce = secrets.token_urlsafe(32)
             signature = hmac.new(self._state_secret, nonce.encode(), hashlib.sha256).hexdigest()
             state = f"{nonce}.{signature}"
@@ -180,11 +196,14 @@ class WebServer:
                         user_data = await user_response.json()
                         if user_response.status >= 400:
                             raise RuntimeError("Discord no devolvió el usuario")
-            except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError, KeyError):
+            except (TimeoutError, aiohttp.ClientError, RuntimeError, KeyError):
                 LOGGER.exception("discord_oauth_failed")
                 return HTMLResponse("No se pudo completar el login con Discord.", status_code=502)
 
-            user_id = int(user_data["id"])
+            try:
+                user_id = int(user_data["id"])
+            except (KeyError, TypeError, ValueError):
+                return HTMLResponse("Discord devolvió un usuario inválido.", status_code=502)
             guild = self._guild()
             try:
                 await guild.fetch_member(user_id)
@@ -273,6 +292,9 @@ class WebServer:
             member = await self._mutation_member(request, x_csrf_token)
             if not member.voice or not member.voice.channel or member.voice.channel.id != payload.channel_id:
                 raise HTTPException(403, "Debes estar dentro del canal seleccionado.")
+            self._prune_runtime_state()
+            while len(self.imports) >= 100:
+                self.imports.pop(next(iter(self.imports)))
             job_id = uuid.uuid4().hex
             job = {
                 "id": job_id,
@@ -384,7 +406,7 @@ class WebServer:
         @app.websocket("/api/events")
         async def events(websocket: WebSocket) -> None:
             origin = websocket.headers.get("origin", "").rstrip("/")
-            if origin and origin != self.settings.public_base_url:
+            if origin != self.settings.public_base_url:
                 await websocket.close(code=4403)
                 return
             session_id = websocket.cookies.get("marushan_session", "")
@@ -399,7 +421,7 @@ class WebServer:
             try:
                 while True:
                     await websocket.send_text(await queue.get())
-            except WebSocketDisconnect:
+            except (WebSocketDisconnect, RuntimeError):
                 pass
             finally:
                 self.subscribers.discard(queue)
@@ -441,7 +463,8 @@ class WebServer:
             job.update(status="complete", added=accepted, omitted=omitted)
         except Exception as exc:
             LOGGER.exception("web_import_failed job_id=%s", job["id"])
-            job.update(status="failed", error=str(exc))
+            message = str(exc) if isinstance(exc, (MusicError, HTTPException)) else "Error interno al importar"
+            job.update(status="failed", error=message)
         await self.broadcast("import")
 
     def _valid_state(self, state: str) -> bool:
@@ -469,6 +492,7 @@ class WebServer:
             raise HTTPException(403, "Ya no perteneces al servidor autorizado") from exc
 
     def _require_session(self, request: Request) -> tuple[str, WebSession]:
+        self._prune_runtime_state()
         session_id = request.cookies.get("marushan_session", "")
         session = self.sessions.get(session_id)
         if not session or session.expires_at < time.monotonic():
@@ -478,7 +502,7 @@ class WebServer:
 
     def _verify_mutation(self, request: Request, session: WebSession, csrf: str) -> None:
         origin = request.headers.get("origin", "").rstrip("/")
-        if origin and origin != self.settings.public_base_url:
+        if origin != self.settings.public_base_url:
             raise HTTPException(403, "Origen no permitido")
         if not csrf or not hmac.compare_digest(csrf, session.csrf):
             raise HTTPException(403, "Token CSRF inválido")
@@ -489,6 +513,17 @@ class WebServer:
         if len(bucket) >= 60:
             raise HTTPException(429, "Demasiadas acciones; espera un momento")
         bucket.append(now)
+
+    def _prune_runtime_state(self) -> None:
+        now = time.monotonic()
+        self.oauth_states = {key: expiry for key, expiry in self.oauth_states.items() if expiry >= now}
+        self.sessions = {key: value for key, value in self.sessions.items() if value.expires_at >= now}
+        active_users = {session.user_id for session in self.sessions.values()}
+        for user_id, bucket in tuple(self.rate_limits.items()):
+            while bucket and bucket[0] < now - 60:
+                bucket.popleft()
+            if not bucket and user_id not in active_users:
+                self.rate_limits.pop(user_id, None)
 
     async def _mutation_member(self, request: Request, csrf: str, *, control: bool = False) -> discord.Member:
         _, session = self._require_session(request)

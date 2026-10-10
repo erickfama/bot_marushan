@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 from fastapi.testclient import TestClient
 
 from src.config import Settings
@@ -23,6 +21,9 @@ class DummyManager:
     def remove_listener(self, _listener):
         return None
 
+    def lavalink_connected(self) -> bool:
+        return False
+
 
 def make_server() -> WebServer:
     settings = Settings(discord_token="token", discord_guild_id=1, public_base_url="https://music.orza.mx")
@@ -32,8 +33,13 @@ def make_server() -> WebServer:
 def test_health_is_public_and_reports_pending_oauth() -> None:
     client = TestClient(make_server().app)
     response = client.get("/health")
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok", "discord": False, "oauthConfigured": False}
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "degraded",
+        "discord": False,
+        "lavalink": False,
+        "oauthConfigured": False,
+    }
 
 
 def test_api_requires_a_discord_session() -> None:

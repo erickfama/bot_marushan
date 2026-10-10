@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -43,8 +44,23 @@ class Settings:
     discord_oauth_client_secret: str | None = None
     web_session_secret: str | None = None
 
+    def __post_init__(self) -> None:
+        if not 1 <= self.default_volume <= 150:
+            raise RuntimeError("DEFAULT_VOLUME debe estar entre 1 y 150")
+        if not 1 <= self.max_queue_size <= 500:
+            raise RuntimeError("MAX_QUEUE_SIZE debe estar entre 1 y 500")
+        if not 1 <= self.idle_timeout_seconds <= 86_400:
+            raise RuntimeError("IDLE_TIMEOUT_SECONDS debe estar entre 1 y 86400")
+        if not 1 <= self.web_port <= 65_535:
+            raise RuntimeError("WEB_PORT debe estar entre 1 y 65535")
+        parsed = urlparse(self.public_base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise RuntimeError("PUBLIC_BASE_URL debe ser una URL http(s) válida")
+        if self.log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+            raise RuntimeError("LOG_LEVEL debe ser DEBUG, INFO, WARNING, ERROR o CRITICAL")
+
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         load_dotenv()
         token = _secret("DISCORD_TOKEN")
         guild_id = _secret("DISCORD_GUILD_ID")
@@ -55,10 +71,6 @@ class Settings:
             raise RuntimeError("DISCORD_GUILD_ID debe contener el ID numérico del servidor")
         volume = _integer("DEFAULT_VOLUME", 75)
         queue_size = _integer("MAX_QUEUE_SIZE", 500)
-        if not 1 <= volume <= 150:
-            raise RuntimeError("DEFAULT_VOLUME debe estar entre 1 y 150")
-        if not 1 <= queue_size <= 500:
-            raise RuntimeError("MAX_QUEUE_SIZE debe estar entre 1 y 500")
         return cls(
             discord_token=token,
             discord_guild_id=int(guild_id),

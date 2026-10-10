@@ -55,15 +55,53 @@ class MusicCog(commands.Cog, name="Música"):
 
     @commands.Cog.listener()
     async def on_wavelink_track_end(self, payload: wavelink.TrackEndEventPayload) -> None:
-        await self.manager.on_track_end(payload.player, payload.reason)
+        if payload.player is None:
+            LOGGER.warning("track_end_without_player reason=%s", payload.reason)
+            return
+        await self.manager.on_track_end(payload.player, payload.reason, payload.original or payload.track)
+
+    @commands.Cog.listener()
+    async def on_wavelink_track_start(self, payload: wavelink.TrackStartEventPayload) -> None:
+        if payload.player is None:
+            return
+        LOGGER.info(
+            "track_start guild_id=%s title=%r identifier=%s duration=%s",
+            payload.player.guild.id,
+            payload.track.title,
+            payload.track.identifier,
+            payload.track.length,
+        )
+
+    @commands.Cog.listener()
+    async def on_wavelink_player_update(self, payload: wavelink.PlayerUpdateEventPayload) -> None:
+        if payload.player is not None:
+            self.manager.record_player_update(payload.player, payload.position, payload.connected)
 
     @commands.Cog.listener()
     async def on_wavelink_track_exception(self, payload: wavelink.TrackExceptionEventPayload) -> None:
+        if payload.player is None:
+            LOGGER.error("track_exception_without_player error=%s", payload.exception)
+            return
         LOGGER.error("track_exception guild_id=%s error=%s", payload.player.guild.id, payload.exception)
+        self.manager.schedule_recovery(payload.player, payload.track, cause="track_exception")
 
     @commands.Cog.listener()
     async def on_wavelink_track_stuck(self, payload: wavelink.TrackStuckEventPayload) -> None:
+        if payload.player is None:
+            LOGGER.error("track_stuck_without_player threshold=%s", payload.threshold)
+            return
         LOGGER.error("track_stuck guild_id=%s threshold=%s", payload.player.guild.id, payload.threshold)
+        self.manager.schedule_recovery(payload.player, payload.track, cause="track_stuck", delay=0)
+
+    @commands.Cog.listener()
+    async def on_wavelink_websocket_closed(self, payload: wavelink.WebsocketClosedEventPayload) -> None:
+        LOGGER.warning(
+            "voice_websocket_closed guild_id=%s code=%s remote=%s reason=%r",
+            payload.player.guild.id if payload.player else None,
+            payload.code,
+            payload.by_remote,
+            payload.reason,
+        )
 
     @commands.hybrid_command(name="join", aliases=["j", "connect"], description="Conecta el bot a tu canal de voz")
     @commands.guild_only()
@@ -87,7 +125,15 @@ class MusicCog(commands.Cog, name="Música"):
             ctx.guild, self._member(ctx), ctx.channel.id, consulta, next_up=siguiente
         )
         message = f"✅ **{track_name(first)}**"
-        message += " se está reproduciendo." if accepted == 1 else f" y **{accepted - 1}** más fueron agregadas."
+        current = self.manager.session(ctx.guild.id).queue.current
+        if accepted == 1:
+            message += (
+                " se está reproduciendo."
+                if self.manager._same_track(current, first)
+                else " fue agregada a la cola."
+            )
+        else:
+            message += f" y **{accepted - 1}** más fueron agregadas."
         if omitted:
             message += f" No se pudieron agregar **{omitted}** pistas."
         await ctx.send(message, view=PlayerControls(self.manager))

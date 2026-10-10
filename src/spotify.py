@@ -98,16 +98,22 @@ class SpotifyClient:
         if resource_type == "album":
             album = await self._get(f"/albums/{resource_id}")
             artwork = self._artwork(album)
-            items = await self._collect(album["tracks"], limit)
+            page = album.get("tracks") or album.get("items")
+            if not page:
+                page = await self._get(f"/albums/{resource_id}/tracks")
+            items = await self._collect(self._as_page(page), limit)
             return [self._track(item, artwork=artwork) for item in items]
         playlist = await self._get(f"/playlists/{resource_id}")
         artwork = self._artwork(playlist)
         page = playlist.get("items") or playlist.get("tracks")
         if not page:
-            raise SpotifyError("Spotify no devolvió canciones para esta playlist")
-        items = await self._collect(page, limit)
+            page = await self._get(f"/playlists/{resource_id}/items")
+        items = await self._collect(self._as_page(page), limit)
         tracks = [item.get("track", item.get("item", item)) for item in items]
-        return [self._track(item, artwork=artwork) for item in tracks if item and item.get("type") == "track"]
+        resolved = [self._track(item, artwork=artwork) for item in tracks if item and item.get("type") == "track"]
+        if not resolved:
+            raise SpotifyError("Spotify no devolvió canciones disponibles para esta playlist")
+        return resolved
 
     async def _canonical_url(self, value: str) -> str:
         value = value.strip()
@@ -123,7 +129,7 @@ class SpotifyClient:
                 if response.status >= 400:
                     raise SpotifyError(f"Spotify respondió {response.status} al abrir el enlace corto")
                 return str(response.url)
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        except (TimeoutError, aiohttp.ClientError) as exc:
             raise SpotifyError("No se pudo abrir el enlace corto de Spotify") from exc
 
     async def _public_track(self, url: str) -> SpotifyTrack:
@@ -137,7 +143,7 @@ class SpotifyClient:
                 if response.status >= 400:
                     raise SpotifyError(f"Spotify respondió {response.status} al consultar el artista")
                 page = await response.text()
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        except (TimeoutError, aiohttp.ClientError) as exc:
             raise SpotifyError("No se pudieron consultar los metadatos públicos de Spotify") from exc
 
         parser = _MetaParser()
@@ -170,28 +176,44 @@ class SpotifyClient:
         session = await self._http()
         for attempt in range(3):
             token = await self._token()
-            async with session.request(method, url, headers={"Authorization": f"Bearer {token}"}) as response:
-                if response.status == 401 and attempt == 0:
-                    self._expires_at = 0
-                    continue
-                if response.status == 429 and attempt < 2:
-                    try:
-                        payload = await response.json()
-                    except (aiohttp.ContentTypeError, ValueError):
-                        payload = {}
-                    if payload.get("reason") == "QUOTA_EXCEEDED":
-                        raise SpotifyError("Se agotó temporalmente la cuota de Spotify; inténtalo más tarde")
-                    await asyncio.sleep(min(int(response.headers.get("Retry-After", "1")), 10))
-                    continue
-                if response.status == 403 and "/playlists/" in url:
-                    raise SpotifyError(
-                        "Spotify solo permite importar playlists propias o colaborativas. "
-                        "Copia esa playlist a una lista de tu cuenta e inténtalo de nuevo."
-                    )
-                if response.status >= 400:
-                    detail = (await response.text())[:300]
-                    raise SpotifyError(f"Spotify respondió {response.status}: {detail}")
-                return await response.json()
+            try:
+                async with session.request(method, url, headers={"Authorization": f"Bearer {token}"}) as response:
+                    if response.status == 401 and attempt == 0:
+                        self._expires_at = 0
+                        continue
+                    if response.status == 429:
+                        try:
+                            payload = await response.json()
+                        except (aiohttp.ContentTypeError, ValueError):
+                            payload = {}
+                        error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+                        if payload.get("reason") == "QUOTA_EXCEEDED" or error.get("reason") == "QUOTA_EXCEEDED":
+                            raise SpotifyError(
+                                "Se agotó temporalmente la cuota de Spotify; inténtalo más tarde"
+                            )
+                        if attempt < 2:
+                            try:
+                                retry_after = float(response.headers.get("Retry-After", "1"))
+                            except ValueError:
+                                retry_after = 1
+                            await asyncio.sleep(min(max(retry_after, 0), 10))
+                            continue
+                    if response.status == 403 and "/playlists/" in url:
+                        raise SpotifyError(
+                            "Spotify solo permite importar playlists propias o colaborativas. "
+                            "Copia esa playlist a una lista de tu cuenta e inténtalo de nuevo."
+                        )
+                    if response.status >= 500 and attempt < 2:
+                        await asyncio.sleep(0.5 * (attempt + 1))
+                        continue
+                    if response.status >= 400:
+                        detail = (await response.text())[:300]
+                        raise SpotifyError(f"Spotify respondió {response.status}: {detail}")
+                    return await response.json()
+            except (TimeoutError, aiohttp.ClientError) as exc:
+                if attempt >= 2:
+                    raise SpotifyError("No se pudo conectar con Spotify después de varios intentos") from exc
+                await asyncio.sleep(0.5 * (attempt + 1))
         raise SpotifyError("Spotify no respondió después de varios intentos")
 
     async def _token(self) -> str:
@@ -202,15 +224,30 @@ class SpotifyClient:
                 return self._access_token
             credentials = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
             session = await self._http()
-            async with session.post(
-                self.TOKEN_URL,
-                headers={"Authorization": f"Basic {credentials}"},
-                data={"grant_type": "refresh_token", "refresh_token": self.refresh_token},
-            ) as response:
-                if response.status >= 400:
-                    raise SpotifyError(f"No se pudo renovar OAuth de Spotify ({response.status})")
-                payload = await response.json()
+            payload: dict[str, Any] | None = None
+            for attempt in range(3):
+                try:
+                    async with session.post(
+                        self.TOKEN_URL,
+                        headers={"Authorization": f"Basic {credentials}"},
+                        data={"grant_type": "refresh_token", "refresh_token": self.refresh_token},
+                    ) as response:
+                        if response.status >= 500 and attempt < 2:
+                            await asyncio.sleep(0.5 * (attempt + 1))
+                            continue
+                        if response.status >= 400:
+                            raise SpotifyError(f"No se pudo renovar OAuth de Spotify ({response.status})")
+                        payload = await response.json()
+                        break
+                except (TimeoutError, aiohttp.ClientError) as exc:
+                    if attempt >= 2:
+                        raise SpotifyError("No se pudo conectar con OAuth de Spotify") from exc
+                    await asyncio.sleep(0.5 * (attempt + 1))
+            if not payload or not payload.get("access_token"):
+                raise SpotifyError("Spotify no devolvió un token OAuth válido")
             self._access_token = payload["access_token"]
+            if payload.get("refresh_token"):
+                self.refresh_token = payload["refresh_token"]
             self._expires_at = time.monotonic() + int(payload.get("expires_in", 3600)) - 60
             return self._access_token
 
@@ -223,6 +260,14 @@ class SpotifyClient:
     def _artwork(resource: dict[str, Any]) -> str | None:
         images = resource.get("images") or []
         return images[0].get("url") if images else None
+
+    @staticmethod
+    def _as_page(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, list):
+            return {"items": value, "next": None}
+        raise SpotifyError("Spotify devolvió una respuesta de playlist no reconocida")
 
     @classmethod
     def _track(cls, item: dict[str, Any], *, artwork: str | None = None) -> SpotifyTrack:

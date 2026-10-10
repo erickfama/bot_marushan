@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import random
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Generic, Iterable, TypeVar
+from typing import Generic, TypeVar
 
 T = TypeVar("T")
 

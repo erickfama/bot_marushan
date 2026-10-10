@@ -125,6 +125,36 @@ async def test_spotify_track_retries_weak_youtube_match_on_youtube_music(
 
 
 @pytest.mark.asyncio
+async def test_spotify_track_falls_back_when_youtube_search_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = MusicManager(SimpleNamespace(), Settings(discord_token="token", discord_guild_id=1))
+    requester = SimpleNamespace(id=1, display_name="User")
+    wanted = SpotifyTrack(title="More", artists=("The Warning",), duration_ms=203_000, url="spotify")
+    candidate = SimpleNamespace(
+        title="MORE (Official Music Video)",
+        author="The Warning",
+        length=204_000,
+        identifier="more",
+        extras=None,
+    )
+
+    async def fake_search(_query: str, *, source):
+        if source is wavelink.TrackSource.YouTube:
+            raise RuntimeError("client unavailable")
+        return [candidate]
+
+    import wavelink
+
+    monkeypatch.setattr(wavelink.Playable, "search", fake_search)
+
+    result = await manager._resolve_spotify_track(wanted, requester)
+
+    assert result is candidate
+    assert candidate.extras["spotify_title"] == "More"
+
+
+@pytest.mark.asyncio
 async def test_youtube_search_falls_back_to_youtube_music(monkeypatch: pytest.MonkeyPatch) -> None:
     manager = MusicManager(SimpleNamespace(), Settings(discord_token="token", discord_guild_id=1))
     requester = SimpleNamespace(id=1, display_name="User")
@@ -232,3 +262,100 @@ async def test_enqueue_does_not_confirm_when_every_track_fails(monkeypatch: pyte
             10,
             "Broken",
         )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_enqueues_start_only_one_track(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = MusicManager(SimpleNamespace(), Settings(discord_token="token", discord_guild_id=1))
+    player = SimpleNamespace(guild=SimpleNamespace(id=1), playing=False)
+    played: list[object] = []
+
+    async def fake_ensure_player(*_args, **_kwargs):
+        return player
+
+    async def fake_resolve(query, *_args, **_kwargs):
+        return [SimpleNamespace(title=query, identifier=query)], 0
+
+    async def fake_play(_player, track):
+        played.append(track)
+        await asyncio.sleep(0.01)
+        player.playing = True
+
+    monkeypatch.setattr(manager, "ensure_player", fake_ensure_player)
+    monkeypatch.setattr(manager, "resolve", fake_resolve)
+    monkeypatch.setattr(manager, "play_track", fake_play)
+
+    await asyncio.gather(
+        manager.enqueue(SimpleNamespace(id=1), SimpleNamespace(id=1), 10, "first"),
+        manager.enqueue(SimpleNamespace(id=1), SimpleNamespace(id=2), 10, "second"),
+    )
+
+    assert [track.title for track in played] == ["first"]
+    assert manager.session(1).queue.current.title == "first"
+    assert [track.title for track in manager.session(1).queue.items] == ["second"]
+
+
+@pytest.mark.asyncio
+async def test_replaced_end_event_does_not_advance_queue() -> None:
+    manager = MusicManager(SimpleNamespace(), Settings(discord_token="token", discord_guild_id=1))
+    current = SimpleNamespace(title="Current", identifier="current")
+    following = SimpleNamespace(title="Following", identifier="following")
+    session = manager.session(1)
+    session.queue.current = current
+    session.queue.add([following])
+    player = SimpleNamespace(guild=SimpleNamespace(id=1))
+
+    await manager.on_track_end(player, "replaced", current)  # type: ignore[arg-type]
+
+    assert session.queue.current is current
+    assert list(session.queue.items) == [following]
+
+
+@pytest.mark.asyncio
+async def test_stale_end_event_does_not_skip_new_current() -> None:
+    manager = MusicManager(SimpleNamespace(), Settings(discord_token="token", discord_guild_id=1))
+    stale = SimpleNamespace(title="Stale", identifier="stale")
+    current = SimpleNamespace(title="Current", identifier="current")
+    following = SimpleNamespace(title="Following", identifier="following")
+    session = manager.session(1)
+    session.queue.current = current
+    session.queue.add([following])
+    player = SimpleNamespace(guild=SimpleNamespace(id=1))
+
+    await manager.on_track_end(player, "finished", stale)  # type: ignore[arg-type]
+
+    assert session.queue.current is current
+    assert list(session.queue.items) == [following]
+
+
+@pytest.mark.asyncio
+async def test_failure_recovery_advances_without_track_end(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = MusicManager(SimpleNamespace(), Settings(discord_token="token", discord_guild_id=1))
+    broken = SimpleNamespace(title="Broken", identifier="broken", length=1000)
+    following = SimpleNamespace(title="Following", identifier="following", length=1000)
+    session = manager.session(1)
+    session.queue.current = broken
+    session.queue.add([following])
+    played: list[object] = []
+
+    class FakePlayer:
+        guild = SimpleNamespace(id=1)
+        position = 1000
+
+        async def skip(self, *, force: bool):
+            return broken
+
+    async def no_wait(_seconds):
+        return None
+
+    async def fake_play(_player, track):
+        played.append(track)
+
+    monkeypatch.setattr("src.player.asyncio.sleep", no_wait)
+    monkeypatch.setattr(manager, "play_track", fake_play)
+
+    await manager.recover_failed_track(FakePlayer(), broken, cause="test", delay=0)  # type: ignore[arg-type]
+
+    assert session.queue.current is following
+    assert played == [following]
+    assert list(session.queue.history) == [broken]

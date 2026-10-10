@@ -24,3 +24,15 @@ def test_spotify_match_prefers_same_song_and_duration() -> None:
     wrong = match_score("Creep", "Radiohead", 238_000, "No Surprises", "Radiohead", 229_000)
     assert exact > 0.9
     assert exact > wrong
+
+
+def test_spotify_match_accepts_platform_noise_and_accents() -> None:
+    score = match_score(
+        "Canción",
+        "Artista",
+        200_000,
+        "CANCION (Official Audio)",
+        "Artista - Topic",
+        201_000,
+    )
+    assert score > 0.9

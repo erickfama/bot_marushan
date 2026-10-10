@@ -1,16 +1,32 @@
 from __future__ import annotations
 
+import logging
+
 import discord
-import wavelink
 
 from src.player import MusicError, MusicManager
 from src.queue import LoopMode
+
+LOGGER = logging.getLogger(__name__)
 
 
 class PlayerControls(discord.ui.View):
     def __init__(self, manager: MusicManager) -> None:
         super().__init__(timeout=900)
         self.manager = manager
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item[discord.ui.View],
+    ) -> None:
+        LOGGER.exception("player_control_failed item=%s", type(item).__name__, exc_info=error)
+        message = f"⚠️ {error}" if isinstance(error, MusicError) else "⚠️ No pude ejecutar ese control."
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):

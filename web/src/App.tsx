@@ -66,13 +66,22 @@ export default function App() {
     if (!user) return;
     let socket: WebSocket | undefined;
     let retry: number;
+    let disposed = false;
     const connect = () => {
+      if (disposed) return;
       socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/events`);
       socket.onmessage = () => refresh().catch(() => undefined);
-      socket.onclose = () => { retry = window.setTimeout(connect, 2000); };
+      socket.onclose = (event) => {
+        if (disposed) return;
+        if (event.code === 4401 || event.code === 4403) {
+          setUser(null);
+          return;
+        }
+        retry = window.setTimeout(connect, 2000);
+      };
     };
     connect();
-    return () => { clearTimeout(retry); socket?.close(); };
+    return () => { disposed = true; clearTimeout(retry); socket?.close(); };
   }, [refresh, user]);
 
   useEffect(() => {

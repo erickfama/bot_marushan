@@ -82,6 +82,28 @@ async def test_resolves_paginated_playlist(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_playlist_items_endpoint_is_used_when_metadata_has_no_items(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SpotifyClient("id", "secret", "refresh")
+    item = {"type": "track", "name": "One", "artists": [{"name": "Artist"}], "duration_ms": 1000}
+    calls: list[str] = []
+
+    async def fake_get(path: str):
+        calls.append(path)
+        if path == "/playlists/abc":
+            return {"images": []}
+        return {"items": [{"item": item}], "next": None}
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    tracks = await client.resolve("spotify:playlist:abc")
+
+    assert [track.title for track in tracks] == ["One"]
+    assert calls == ["/playlists/abc", "/playlists/abc/items"]
+
+
+@pytest.mark.asyncio
 async def test_rejects_invalid_spotify_url() -> None:
     client = SpotifyClient("id", "secret", "refresh")
     with pytest.raises(SpotifyError):
@@ -121,6 +143,16 @@ async def test_owned_playlist_error_is_explained_on_403() -> None:
 @pytest.mark.asyncio
 async def test_quota_exceeded_is_not_retried() -> None:
     response = FakeResponse(429, {"reason": "QUOTA_EXCEEDED"})
+    client = SpotifyClient("id", "secret", "refresh", session=FakeSession(response))
+    client._access_token = "token"
+    client._expires_at = float("inf")
+    with pytest.raises(SpotifyError, match="cuota"):
+        await client._request("GET", "https://api.spotify.com/v1/tracks/abc")
+
+
+@pytest.mark.asyncio
+async def test_nested_quota_exceeded_is_not_retried() -> None:
+    response = FakeResponse(429, {"error": {"reason": "QUOTA_EXCEEDED"}})
     client = SpotifyClient("id", "secret", "refresh", session=FakeSession(response))
     client._access_token = "token"
     client._expires_at = float("inf")
