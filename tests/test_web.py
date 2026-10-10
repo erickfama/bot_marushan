@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from src.config import Settings
 from src.web import WebServer
@@ -63,3 +65,13 @@ def test_oauth_state_is_signed() -> None:
     signature = hmac.new(server._state_secret, nonce.encode(), hashlib.sha256).hexdigest()
     assert server._valid_state(f"{nonce}.{signature}")
     assert not server._valid_state(f"{nonce}.invalid")
+
+
+def test_websocket_reports_expired_session_without_reconnect_loop() -> None:
+    client = TestClient(make_server().app)
+    with pytest.raises(WebSocketDisconnect) as captured:
+        with client.websocket_connect(
+            "/api/events", headers={"origin": "https://music.orza.mx"}
+        ):
+            pass
+    assert captured.value.code == 4401

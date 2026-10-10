@@ -407,11 +407,13 @@ class WebServer:
         async def events(websocket: WebSocket) -> None:
             origin = websocket.headers.get("origin", "").rstrip("/")
             if origin != self.settings.public_base_url:
+                await websocket.accept()
                 await websocket.close(code=4403)
                 return
             session_id = websocket.cookies.get("marushan_session", "")
             session = self.sessions.get(session_id)
             if not session or session.expires_at < time.monotonic():
+                await websocket.accept()
                 await websocket.close(code=4401)
                 return
             queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
