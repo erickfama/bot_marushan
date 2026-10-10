@@ -186,7 +186,8 @@ class SpotifyClient:
                             payload = await response.json()
                         except (aiohttp.ContentTypeError, ValueError):
                             payload = {}
-                        error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+                        raw_error = payload.get("error")
+                        error: dict[str, Any] = raw_error if isinstance(raw_error, dict) else {}
                         if payload.get("reason") == "QUOTA_EXCEEDED" or error.get("reason") == "QUOTA_EXCEEDED":
                             raise SpotifyError(
                                 "Se agotó temporalmente la cuota de Spotify; inténtalo más tarde"
@@ -243,13 +244,15 @@ class SpotifyClient:
                     if attempt >= 2:
                         raise SpotifyError("No se pudo conectar con OAuth de Spotify") from exc
                     await asyncio.sleep(0.5 * (attempt + 1))
-            if not payload or not payload.get("access_token"):
+            access_token = payload.get("access_token") if payload else None
+            if not isinstance(access_token, str) or not access_token:
                 raise SpotifyError("Spotify no devolvió un token OAuth válido")
-            self._access_token = payload["access_token"]
+            assert payload is not None
+            self._access_token = access_token
             if payload.get("refresh_token"):
                 self.refresh_token = payload["refresh_token"]
             self._expires_at = time.monotonic() + int(payload.get("expires_in", 3600)) - 60
-            return self._access_token
+            return access_token
 
     async def _http(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:

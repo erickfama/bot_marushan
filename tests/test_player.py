@@ -359,3 +359,60 @@ async def test_failure_recovery_advances_without_track_end(monkeypatch: pytest.M
     assert session.queue.current is following
     assert played == [following]
     assert list(session.queue.history) == [broken]
+
+
+@pytest.mark.asyncio
+async def test_ensure_player_explains_missing_speak_permission() -> None:
+    manager = MusicManager(SimpleNamespace(), Settings(discord_token="token", discord_guild_id=1))
+
+    class Channel:
+        id = 10
+        name = "Música"
+
+        @staticmethod
+        def permissions_for(_member):
+            return SimpleNamespace(view_channel=True, connect=True, speak=False)
+
+    member = SimpleNamespace(voice=SimpleNamespace(channel=Channel()))
+    guild = SimpleNamespace(me=object(), voice_client=None)
+
+    with pytest.raises(MusicError, match="permiso para hablar"):
+        await manager.ensure_player(guild, member)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_idle_disconnect_keeps_watching_until_channel_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = MusicManager(
+        SimpleNamespace(),
+        Settings(discord_token="token", discord_guild_id=1, idle_timeout_seconds=2),
+    )
+    session = manager.session(1)
+    human = SimpleNamespace(bot=False)
+    clock = 0.0
+    sleeps = 0
+
+    class Player:
+        connected = True
+        channel = SimpleNamespace(members=[human])
+
+        async def disconnect(self):
+            self.connected = False
+
+    player = Player()
+
+    async def advance(_seconds: float) -> None:
+        nonlocal clock, sleeps
+        sleeps += 1
+        clock += 1
+        if sleeps == 1:
+            player.channel.members.clear()
+
+    monkeypatch.setattr("src.player.asyncio.sleep", advance)
+    monkeypatch.setattr("src.player.time.monotonic", lambda: clock)
+
+    await manager._idle_disconnect(player, session)  # type: ignore[arg-type]
+
+    assert not player.connected
+    assert sleeps >= 3

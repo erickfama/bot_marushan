@@ -96,6 +96,14 @@ class MusicManager:
         member_channel = self.member_voice_channel(member)
         if channel_id is not None and member_channel.id != channel_id:
             raise MusicError("Debes estar dentro del canal de voz seleccionado.")
+        bot_member = guild.me
+        if bot_member is None:
+            raise MusicError("Discord todavía no terminó de preparar al bot en este servidor.")
+        permissions = member_channel.permissions_for(bot_member)
+        if not permissions.view_channel or not permissions.connect:
+            raise MusicError(f"No tengo permiso para entrar a **{member_channel.name}**.")
+        if not permissions.speak:
+            raise MusicError(f"No tengo permiso para hablar en **{member_channel.name}**.")
         player = guild.voice_client
         if player and not isinstance(player, wavelink.Player):
             raise MusicError("La conexión de voz actual no pertenece al reproductor musical.")

@@ -114,4 +114,6 @@ No reinicies el VPS sin una ventana acordada. La validación normal puede hacers
 - **El login web devuelve 503:** configura el client ID y el secret OAuth de Discord y vuelve a crear solo el contenedor `bot`.
 - **El panel abre pero no permite controlar:** entra desde Discord al mismo canal seleccionado en la web.
 - **Una pista de Spotify no se agrega:** no se encontró una coincidencia suficientemente confiable en YouTube; el bot la contabiliza como omitida.
+- **Una canción individual de Spotify funciona, pero un álbum o playlist no:** las canciones públicas pueden usar metadatos abiertos; los álbumes y playlists requieren las tres variables OAuth de Spotify (`SPOTIFY_CLIENT_ID`, client secret y refresh token).
+- **El bot entra al canal pero no se escucha:** confirma que su rol tenga `View Channel`, `Connect` y `Speak`. El bot ahora valida esos permisos y supervisa que la posición de Lavalink avance; si una fuente queda atascada, la omite y continúa la cola.
 - **YouTube cambia o bloquea una fuente:** revisa primero los logs de `lavalink` y `yt-cipher`. Actualiza de forma controlada sus imágenes o el plugin declarado en `lavalink/application.yml`; no agregues cookies de tu cuenta principal.

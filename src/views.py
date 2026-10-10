@@ -15,6 +15,12 @@ class PlayerControls(discord.ui.View):
         super().__init__(timeout=900)
         self.manager = manager
 
+    @staticmethod
+    def _context(interaction: discord.Interaction) -> tuple[discord.Guild, discord.Member]:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            raise MusicError("Este control solo funciona dentro del servidor.")
+        return interaction.guild, interaction.user
+
     async def on_error(
         self,
         interaction: discord.Interaction,
@@ -40,14 +46,16 @@ class PlayerControls(discord.ui.View):
 
     @discord.ui.button(emoji="⏯️", style=discord.ButtonStyle.primary)
     async def pause_resume(self, interaction: discord.Interaction, _: discord.ui.Button[discord.ui.View]) -> None:
-        player = interaction.guild.voice_client
-        await self.manager.pause(interaction.guild, interaction.user, not player.paused)
+        guild, member = self._context(interaction)
+        player = self.manager.require_same_channel(guild, member)
+        await self.manager.pause(guild, member, not player.paused)
         await interaction.response.send_message("Pausa alternada.", ephemeral=True)
 
     @discord.ui.button(emoji="⏮️", style=discord.ButtonStyle.secondary)
     async def previous(self, interaction: discord.Interaction, _: discord.ui.Button[discord.ui.View]) -> None:
+        guild, member = self._context(interaction)
         try:
-            await self.manager.previous(interaction.guild, interaction.user)
+            await self.manager.previous(guild, member)
         except MusicError:
             await interaction.response.send_message("No hay una canción anterior.", ephemeral=True)
             return
@@ -55,23 +63,29 @@ class PlayerControls(discord.ui.View):
 
     @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary)
     async def skip(self, interaction: discord.Interaction, _: discord.ui.Button[discord.ui.View]) -> None:
-        await self.manager.skip(interaction.guild, interaction.user)
+        guild, member = self._context(interaction)
+        await self.manager.skip(guild, member)
         await interaction.response.send_message("Canción omitida.", ephemeral=True)
 
     @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.danger)
-    async def stop(self, interaction: discord.Interaction, _: discord.ui.Button[discord.ui.View]) -> None:
-        await self.manager.stop(interaction.guild, interaction.user)
+    async def stop_button(
+        self, interaction: discord.Interaction, _: discord.ui.Button[discord.ui.View]
+    ) -> None:
+        guild, member = self._context(interaction)
+        await self.manager.stop(guild, member)
         await interaction.response.send_message("Reproducción y cola detenidas.", ephemeral=True)
 
     @discord.ui.button(emoji="🔁", style=discord.ButtonStyle.secondary)
     async def loop(self, interaction: discord.Interaction, _: discord.ui.Button[discord.ui.View]) -> None:
-        queue = self.manager.session(interaction.guild.id).queue
+        guild = self._context(interaction)[0]
+        queue = self.manager.session(guild.id).queue
         modes = [LoopMode.OFF, LoopMode.TRACK, LoopMode.QUEUE]
-        await self.manager.set_loop(interaction.guild.id, modes[(modes.index(queue.loop_mode) + 1) % len(modes)])
+        await self.manager.set_loop(guild.id, modes[(modes.index(queue.loop_mode) + 1) % len(modes)])
         await interaction.response.send_message(f"Loop: `{queue.loop_mode.value}`.", ephemeral=True)
 
     @discord.ui.button(label="Cola", emoji="📜", style=discord.ButtonStyle.secondary)
     async def queue(self, interaction: discord.Interaction, _: discord.ui.Button[discord.ui.View]) -> None:
-        items = list(self.manager.session(interaction.guild.id).queue.items)
+        guild = self._context(interaction)[0]
+        items = list(self.manager.session(guild.id).queue.items)
         lines = [f"`{index}.` {track.title} — {track.author}" for index, track in enumerate(items[:10], 1)]
         await interaction.response.send_message("\n".join(lines) or "La cola está vacía.", ephemeral=True)
