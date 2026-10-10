@@ -4,6 +4,7 @@ import argparse
 import base64
 import getpass
 import http.server
+from pathlib import Path
 import secrets
 import urllib.parse
 import webbrowser
@@ -14,12 +15,19 @@ SCOPES = "playlist-read-private playlist-read-collaborative user-library-read"
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Obtiene un refresh token de Spotify mediante PKCE.")
+    parser = argparse.ArgumentParser(description="Obtiene un refresh token de Spotify mediante Authorization Code Flow.")
     parser.add_argument("--client-id", required=True)
     parser.add_argument("--redirect-uri", default="http://127.0.0.1:8765/callback")
+    parser.add_argument("--client-secret-file", type=Path)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     parsed = urllib.parse.urlparse(args.redirect_uri)
-    client_secret = getpass.getpass("Spotify client secret: ")
+    if args.client_secret_file:
+        client_secret = args.client_secret_file.read_text(encoding="utf-8").strip()
+        if not client_secret:
+            parser.error(f"El archivo {args.client_secret_file} está vacío.")
+    else:
+        client_secret = getpass.getpass("Spotify client secret: ")
     state = secrets.token_urlsafe(16)
     result: dict[str, str] = {}
 
@@ -55,7 +63,13 @@ def main() -> None:
         "redirect_uri": args.redirect_uri,
     }, timeout=20)
     response.raise_for_status()
-    print(response.json()["refresh_token"])
+    refresh_token = response.json()["refresh_token"]
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(f"{refresh_token}\n", encoding="utf-8")
+        print(f"Refresh token guardado en {args.output}.")
+    else:
+        print(refresh_token)
 
 
 if __name__ == "__main__":

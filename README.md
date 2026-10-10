@@ -52,10 +52,12 @@ Lavalink y `yt-cipher` no publican puertos al host; únicamente los servicios de
 En Spotify Developer Dashboard registra exactamente `http://127.0.0.1:8765/callback` como Redirect URI. Instala las dependencias y ejecuta:
 
 ```bash
-python scripts/spotify_oauth.py --client-id TU_CLIENT_ID
+python scripts/spotify_oauth.py --client-id TU_CLIENT_ID \
+  --client-secret-file secrets/spotify_client_secret.txt \
+  --output secrets/spotify_refresh_token.txt
 ```
 
-El script abre el navegador, solicita `playlist-read-private`, `playlist-read-collaborative` y `user-library-read`, y muestra el refresh token. Guárdalo en `secrets/spotify_refresh_token.txt`; nunca lo confirmes en Git.
+El script abre el navegador, solicita `playlist-read-private`, `playlist-read-collaborative` y `user-library-read`, y guarda el refresh token directamente en `secrets/spotify_refresh_token.txt`; nunca lo confirmes en Git ni lo pegues en el chat.
 
 Spotify no se usa para retransmitir audio. Sus metadatos conservan el enlace de atribución y la canción se empareja con un resultado reproducible de YouTube. Los enlaces públicos de canciones funcionan sin credenciales; los álbumes y playlists requieren la configuración OAuth anterior.
 
