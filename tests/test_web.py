@@ -69,9 +69,8 @@ def test_oauth_state_is_signed() -> None:
 
 def test_websocket_reports_expired_session_without_reconnect_loop() -> None:
     client = TestClient(make_server().app)
-    with pytest.raises(WebSocketDisconnect) as captured:
-        with client.websocket_connect(
-            "/api/events", headers={"origin": "https://music.orza.mx"}
-        ):
-            pass
+    with client.websocket_connect(
+        "/api/events", headers={"origin": "https://music.orza.mx"}
+    ) as websocket, pytest.raises(WebSocketDisconnect) as captured:
+        websocket.receive_text()
     assert captured.value.code == 4401
