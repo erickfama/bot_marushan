@@ -41,6 +41,7 @@ def test_health_is_public_and_reports_pending_oauth() -> None:
         "discord": False,
         "lavalink": False,
         "oauthConfigured": False,
+        "spotifyConfigured": False,
     }
 
 

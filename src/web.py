@@ -150,6 +150,7 @@ class WebServer:
                     "discord": discord_ready,
                     "lavalink": lavalink_ready,
                     "oauthConfigured": self.settings.discord_oauth_enabled,
+                    "spotifyConfigured": self.settings.spotify_enabled,
                 },
                 status_code=200 if healthy else 503,
             )
