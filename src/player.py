@@ -143,6 +143,11 @@ class MusicManager:
                 spotify_tracks = await self.spotify.resolve(query, limit=self.settings.max_queue_size)
             except SpotifyError as exc:
                 raise MusicError(str(exc)) from exc
+            LOGGER.info(
+                "spotify_import_started requester_id=%s found=%s",
+                requester.id,
+                len(spotify_tracks),
+            )
             await self._progress(progress, source="spotify", found=len(spotify_tracks), resolved=0, omitted=0)
             semaphore = asyncio.Semaphore(4)
             completed = 0
@@ -169,7 +174,15 @@ class MusicManager:
                 return track
 
             results = await asyncio.gather(*(resolve_one(track) for track in spotify_tracks))
-            return [track for track in results if track is not None], omitted
+            resolved_tracks = [track for track in results if track is not None]
+            LOGGER.info(
+                "spotify_import_resolved requester_id=%s found=%s resolved=%s omitted=%s",
+                requester.id,
+                len(spotify_tracks),
+                len(resolved_tracks),
+                omitted,
+            )
+            return resolved_tracks, omitted
 
         query = self.youtube.without_radio(query)
         is_url = query.startswith(("http://", "https://"))
@@ -263,7 +276,7 @@ class MusicManager:
                 score,
             )
             return None
-        LOGGER.info(
+        LOGGER.debug(
             "spotify_match_selected title=%r candidate=%r author=%r score=%.2f",
             wanted.title,
             chosen.title,
@@ -309,6 +322,8 @@ class MusicManager:
         channel_id: int | None = None,
         progress: ProgressCallback | None = None,
     ) -> tuple[int, int, wavelink.Playable]:
+        started_at = time.monotonic()
+        source = "spotify" if is_spotify_url(query) else "youtube"
         player = await self.ensure_player(guild, member, channel_id)
         try:
             tracks, misses = await self.resolve(query, member, progress)
@@ -340,7 +355,17 @@ class MusicManager:
             if started_track is None:
                 raise MusicError("Encontré resultados, pero la fuente de audio no pudo iniciar ninguna pista.")
         await self.emit("queue")
-        return accepted, misses + max(0, len(tracks) - accepted), started_track or tracks[0]
+        total_omitted = misses + max(0, len(tracks) - accepted)
+        LOGGER.info(
+            "enqueue_completed guild_id=%s source=%s resolved=%s accepted=%s omitted=%s duration_ms=%s",
+            guild.id,
+            source,
+            len(tracks),
+            accepted,
+            total_omitted,
+            round((time.monotonic() - started_at) * 1000),
+        )
+        return accepted, total_omitted, started_track or tracks[0]
 
     async def play_next(
         self,

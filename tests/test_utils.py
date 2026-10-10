@@ -1,5 +1,6 @@
 import pytest
 
+from src.music_cog import import_progress_text
 from src.utils import format_time, match_score, parse_time
 
 
@@ -36,3 +37,13 @@ def test_spotify_match_accepts_platform_noise_and_accents() -> None:
         201_000,
     )
     assert score > 0.9
+
+
+def test_spotify_import_progress_text() -> None:
+    message = import_progress_text(
+        {"source": "spotify", "found": 500, "resolved": 387, "omitted": 3}
+    )
+
+    assert "390/500" in message
+    assert "387" in message
+    assert "3" in message

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from pathlib import Path
 
 import discord
@@ -33,6 +35,17 @@ def track_name(track: wavelink.Playable) -> str:
     spotify_title = getattr(track.extras, "spotify_title", None)
     spotify_artists = getattr(track.extras, "spotify_artists", None)
     return f"{spotify_title} — {spotify_artists}" if spotify_title else f"{track.title} — {track.author}"
+
+
+def import_progress_text(update: dict[str, int | str]) -> str:
+    found = int(update.get("found", 0))
+    resolved = int(update.get("resolved", 0))
+    omitted = int(update.get("omitted", 0))
+    processed = min(found, resolved + omitted)
+    return (
+        f"⏳ Importando desde Spotify: **{processed}/{found}** procesadas · "
+        f"**{resolved}** encontradas · **{omitted}** omitidas."
+    )
 
 
 class MusicCog(commands.Cog, name="Música"):
@@ -119,10 +132,36 @@ class MusicCog(commands.Cog, name="Música"):
             ctx.guild.id if ctx.guild else None,
             ctx.author.id,
         )
+        progress_lock = asyncio.Lock()
+        last_progress_at = 0.0
+
+        async def report_progress(update: dict[str, int | str]) -> None:
+            nonlocal last_progress_at
+            if ctx.interaction is None or update.get("source") != "spotify":
+                return
+            found = int(update.get("found", 0))
+            processed = int(update.get("resolved", 0)) + int(update.get("omitted", 0))
+            async with progress_lock:
+                now = time.monotonic()
+                if 0 < processed < found and now - last_progress_at < 5:
+                    return
+                last_progress_at = now
+                try:
+                    await ctx.interaction.edit_original_response(content=import_progress_text(update))
+                except discord.HTTPException as exc:
+                    # A temporary Discord edit failure must not cancel a long
+                    # playlist import that is otherwise progressing normally.
+                    LOGGER.warning("spotify_progress_update_failed status=%s", exc.status)
+
         if ctx.interaction:
             await ctx.defer()
         accepted, omitted, first = await self.manager.enqueue(
-            ctx.guild, self._member(ctx), ctx.channel.id, consulta, next_up=siguiente
+            ctx.guild,
+            self._member(ctx),
+            ctx.channel.id,
+            consulta,
+            next_up=siguiente,
+            progress=report_progress,
         )
         message = f"✅ **{track_name(first)}**"
         current = self.manager.session(ctx.guild.id).queue.current
@@ -136,7 +175,11 @@ class MusicCog(commands.Cog, name="Música"):
             message += f" y **{accepted - 1}** más fueron agregadas."
         if omitted:
             message += f" No se pudieron agregar **{omitted}** pistas."
-        await ctx.send(message, view=PlayerControls(self.manager))
+        controls = PlayerControls(self.manager)
+        if ctx.interaction:
+            await ctx.interaction.edit_original_response(content=message, view=controls)
+        else:
+            await ctx.send(message, view=controls)
 
     @commands.hybrid_command(name="play-file", description="Reproduce un archivo adjunto")
     @commands.guild_only()

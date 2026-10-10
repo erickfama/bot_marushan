@@ -4,10 +4,10 @@ import argparse
 import base64
 import getpass
 import http.server
-from pathlib import Path
 import secrets
 import urllib.parse
 import webbrowser
+from pathlib import Path
 
 import requests
 
@@ -32,7 +32,7 @@ def main() -> None:
     result: dict[str, str] = {}
 
     class Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             if query.get("state", [None])[0] != state:
                 self.send_error(400, "Estado OAuth inválido")
