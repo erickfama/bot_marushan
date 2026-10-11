@@ -1,4 +1,4 @@
-# Bot Marushan
+# Bot Nissin
 
 Bot musical personal para Discord. Usa `discord.py` y Wavelink para controlar un nodo Lavalink v4. Las búsquedas y enlaces de YouTube aportan el audio; Spotify se usa únicamente como catálogo para importar canciones, álbumes y playlists privadas. Lavalink reproduce las pistas mediante su plugin de YouTube y el servicio interno `yt-cipher`. No se usan cookies personales ni URLs temporales de Google Video.
 
@@ -12,8 +12,12 @@ Bot musical personal para Discord. Usa `discord.py` y Wavelink para controlar un
 - Controles mediante botones y desconexión por inactividad.
 - Docker Compose con reinicio automático, healthchecks y rotación de logs.
 - Reproductor web responsive en `music.orza.mx`, protegido con login de Discord y estado en vivo por WebSocket.
+- Biblioteca persistente con favoritos, historial, preferencias y recuperación de la cola tras reiniciar.
+- Centro de importaciones con progreso, cancelación, reintento y registro de trabajos anteriores.
+- Búsqueda web con selección de resultados antes de agregarlos.
+- Estadísticas de los últimos 30 días y diagnóstico separado de Discord, Lavalink, Spotify y SQLite.
 
-La cola, historial y ajustes de sesión viven en memoria y se limpian al reiniciar.
+Los datos musicales viven en SQLite dentro del volumen Docker `bot-data`. Las sesiones de inicio de sesión web siguen siendo temporales y se cierran al reiniciar.
 
 ## Requisitos
 
@@ -74,7 +78,9 @@ El frontend React se compila dentro de la imagen y FastAPI lo sirve desde el mis
 5. Crea el registro DNS `A` de `music.orza.mx` hacia el VPS.
 6. Copia `deploy/nginx/music.orza.mx.conf` a los sitios de Nginx, valida con `nginx -t` y emite el certificado con Certbot.
 
-El panel permite ver el estado a cualquier miembro autenticado del servidor. Los controles solo se habilitan cuando ese miembro está dentro del canal de voz seleccionado. La cola y las sesiones web se limpian al reiniciar.
+El panel permite ver el estado a cualquier miembro autenticado del servidor. Los controles solo se habilitan cuando ese miembro está dentro del canal de voz seleccionado. La cola, historial, favoritos, estadísticas e importaciones se conservan; solamente las sesiones web se limpian al reiniciar.
+
+La navegación del panel contiene Reproductor, Biblioteca, Importaciones, Historial, Estadísticas y Estado. Las estadísticas se generan localmente y no se comparten con servicios externos.
 
 ## Comandos
 
@@ -103,7 +109,7 @@ docker compose config --quiet
 
 Antes de modificar el VPS, copia y ejecuta `scripts/vps_preflight.sh`; solo consulta sistema, recursos, Docker, contenedores, redes y puertos. Revisa el resultado para elegir un directorio independiente que no interfiera con los proyectos existentes.
 
-Luego clona la rama, crea `.env` y `secrets/` directamente en el servidor y ejecuta `docker compose up --build -d`. La política `unless-stopped` levanta bot y Lavalink después de reiniciar Docker o el VPS.
+Luego clona la rama, crea `.env` y `secrets/` directamente en el servidor y ejecuta `docker compose up --build -d`. La política `unless-stopped` levanta bot y Lavalink después de reiniciar Docker o el VPS. Compose crea el volumen `bot-data`; no lo elimines durante una actualización porque contiene `music.db`.
 
 No reinicies el VPS sin una ventana acordada. La validación normal puede hacerse con `docker compose restart`, seguida de `docker compose ps` y los logs.
 

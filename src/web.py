@@ -5,9 +5,11 @@ import hashlib
 import hmac
 import json
 import logging
+import random
 import secrets
 import time
 import uuid
+import re
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +34,7 @@ from pydantic import BaseModel, Field
 from src.config import Settings
 from src.player import MusicError, MusicManager
 from src.queue import LoopMode
+from src.storage import MusicStorage
 
 LOGGER = logging.getLogger(__name__)
 DISCORD_AUTHORIZE = "https://discord.com/oauth2/authorize"
@@ -58,6 +61,19 @@ class ValueRequest(BaseModel):
     value: int | bool | str
 
 
+class RetryImportRequest(BaseModel):
+    channel_id: int
+
+
+class PlaylistNameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class PlaylistPlayRequest(BaseModel):
+    channel_id: int
+    next_up: bool = False
+
+
 @dataclass(slots=True)
 class WebSession:
     user_id: int
@@ -75,10 +91,19 @@ class WebServer:
         self.app = FastAPI(title="Bot Marushan", docs_url=None, redoc_url=None, openapi_url=None)
         self.sessions: dict[str, WebSession] = {}
         self.oauth_states: dict[str, float] = {}
+        self.storage = getattr(manager, "storage", None) or MusicStorage(settings.database_path)
+        persisted_imports = self.storage.recent_imports(settings.discord_guild_id, 25)
         self.imports: dict[str, dict[str, Any]] = {}
-        self.import_tasks: set[asyncio.Task[None]] = set()
+        for stored in reversed(persisted_imports):
+            stored["next_up"] = bool(stored["next_up"])
+            if stored["status"] in {"queued", "resolving"}:
+                stored.update(status="failed", error="La importación fue interrumpida por un reinicio.")
+                self.storage.save_import(stored)
+            self.imports[stored["id"]] = stored
+        self.import_tasks: dict[str, asyncio.Task[None]] = {}
         self.subscribers: set[asyncio.Queue[str]] = set()
         self.rate_limits: dict[int, deque[float]] = defaultdict(deque)
+        self.lyrics_cache: dict[str, dict[str, Any]] = {}
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task[None] | None = None
         self._state_secret = (settings.web_session_secret or secrets.token_urlsafe(48)).encode()
@@ -101,7 +126,7 @@ class WebServer:
 
     async def close(self) -> None:
         self.manager.remove_listener(self.broadcast)
-        for task in tuple(self.import_tasks):
+        for task in tuple(self.import_tasks.values()):
             task.cancel()
         if self._server:
             self._server.should_exit = True
@@ -262,8 +287,223 @@ class WebServer:
             payload = self.manager.state(self._guild())
             payload["canControl"] = self._can_control(member)
             payload["oauthConfigured"] = self.settings.discord_oauth_enabled
-            payload["imports"] = list(self.imports.values())[-10:]
+            payload["imports"] = [self._public_import(job) for job in list(self.imports.values())[-10:]]
+            current = payload.get("current")
+            favorites = self.storage.favorites(self.settings.discord_guild_id, session.user_id)
+            payload["currentFavorite"] = bool(
+                current and any(item["uri"] == current.get("uri") for item in favorites)
+            )
             return payload
+
+        @app.get("/api/search")
+        async def search(query: str, request: Request) -> list[dict[str, Any]]:
+            _, session = self._require_session(request)
+            member = await self._member(session.user_id)
+            clean = query.strip()
+            if not clean:
+                raise HTTPException(422, "Escribe una búsqueda")
+            if len(clean) > 500:
+                raise HTTPException(422, "La búsqueda es demasiado larga")
+            return await self.manager.search_candidates(clean, member)
+
+        @app.get("/api/history")
+        async def history(request: Request, limit: int = 100) -> list[dict[str, Any]]:
+            self._require_session(request)
+            return self.storage.history(self.settings.discord_guild_id, max(1, min(limit, 250)))
+
+        @app.get("/api/statistics")
+        async def statistics(request: Request, days: int = 30) -> dict[str, Any]:
+            self._require_session(request)
+            return self.storage.statistics(self.settings.discord_guild_id, max(1, min(days, 365)))
+
+        @app.get("/api/favorites")
+        async def favorites(request: Request) -> list[dict[str, Any]]:
+            _, session = self._require_session(request)
+            return self.storage.favorites(self.settings.discord_guild_id, session.user_id)
+
+        @app.post("/api/favorites/current")
+        async def favorite_current(
+            request: Request, x_csrf_token: str = Header(default="")
+        ) -> dict[str, bool]:
+            _, session = self._require_session(request)
+            self._verify_mutation(request, session, x_csrf_token)
+            current = self.manager.state(self._guild()).get("current")
+            if not current:
+                raise HTTPException(400, "No hay una canción reproduciéndose")
+            favorite = self.storage.toggle_favorite(
+                self.settings.discord_guild_id, session.user_id, current
+            )
+            await self.broadcast("library")
+            return {"favorite": favorite}
+
+        @app.get("/api/playlists")
+        async def playlists(request: Request) -> list[dict[str, Any]]:
+            _, session = self._require_session(request)
+            return self.storage.playlists(self.settings.discord_guild_id, session.user_id)
+
+        @app.post("/api/playlists")
+        async def create_playlist(
+            payload: PlaylistNameRequest, request: Request, x_csrf_token: str = Header(default="")
+        ) -> dict[str, int]:
+            _, session = self._require_session(request)
+            self._verify_mutation(request, session, x_csrf_token)
+            try:
+                playlist_id = self.storage.create_playlist(
+                    self.settings.discord_guild_id, session.user_id, payload.name
+                )
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            await self.broadcast("library")
+            return {"id": playlist_id}
+
+        @app.post("/api/playlists/{playlist_id}/save-queue")
+        async def save_queue_playlist(
+            playlist_id: int, request: Request, x_csrf_token: str = Header(default="")
+        ) -> dict[str, int]:
+            _, session = self._require_session(request)
+            self._verify_mutation(request, session, x_csrf_token)
+            state = self.manager.state(self._guild())
+            tracks = ([state["current"]] if state.get("current") else []) + state["queue"]
+            try:
+                count = self.storage.replace_playlist_tracks(
+                    playlist_id, self.settings.discord_guild_id, session.user_id, tracks
+                )
+            except KeyError as exc:
+                raise HTTPException(404, str(exc)) from exc
+            await self.broadcast("library")
+            return {"tracks": count}
+
+        @app.delete("/api/playlists/{playlist_id}")
+        async def delete_playlist(
+            playlist_id: int, request: Request, x_csrf_token: str = Header(default="")
+        ) -> dict[str, bool]:
+            _, session = self._require_session(request)
+            self._verify_mutation(request, session, x_csrf_token)
+            try:
+                self.storage.delete_playlist(
+                    playlist_id, self.settings.discord_guild_id, session.user_id
+                )
+            except KeyError as exc:
+                raise HTTPException(404, str(exc)) from exc
+            await self.broadcast("library")
+            return {"ok": True}
+
+        @app.post("/api/playlists/{playlist_id}/play", status_code=202)
+        async def play_playlist(
+            playlist_id: int,
+            payload: PlaylistPlayRequest,
+            request: Request,
+            x_csrf_token: str = Header(default=""),
+        ) -> dict[str, str]:
+            member = await self._mutation_member(request, x_csrf_token)
+            _, session = self._require_session(request)
+            if not member.voice or not member.voice.channel or member.voice.channel.id != payload.channel_id:
+                raise HTTPException(403, "Debes estar dentro del canal seleccionado.")
+            try:
+                tracks = self.storage.playlist_tracks(
+                    playlist_id, self.settings.discord_guild_id, session.user_id
+                )
+            except KeyError as exc:
+                raise HTTPException(404, str(exc)) from exc
+            if not tracks:
+                raise HTTPException(400, "La playlist está vacía")
+            job_id = uuid.uuid4().hex
+            job = {
+                "id": job_id, "guild_id": self.settings.discord_guild_id, "user_id": member.id,
+                "query": f"Playlist guardada ({len(tracks)} canciones)", "channel_id": payload.channel_id,
+                "next_up": payload.next_up, "status": "queued", "source": "library",
+                "found": len(tracks), "resolved": 0, "omitted": 0, "added": 0,
+                "error": None, "created_at": int(time.time()),
+            }
+            self.imports[job_id] = job
+            self.storage.save_import(job)
+            task = asyncio.create_task(
+                self._run_saved_playlist(job, member, payload, tracks), name=f"playlist-{job_id}"
+            )
+            self.import_tasks[job_id] = task
+            task.add_done_callback(lambda _: self.import_tasks.pop(job_id, None))
+            return {"jobId": job_id}
+
+        @app.post("/api/radio/favorites", status_code=202)
+        async def favorite_radio(
+            payload: PlaylistPlayRequest,
+            request: Request,
+            x_csrf_token: str = Header(default=""),
+        ) -> dict[str, str]:
+            member = await self._mutation_member(request, x_csrf_token)
+            _, session = self._require_session(request)
+            tracks = self.storage.favorites(self.settings.discord_guild_id, session.user_id)
+            if not tracks:
+                raise HTTPException(400, "Necesitas al menos un favorito para iniciar la radio")
+            random.shuffle(tracks)
+            job_id = uuid.uuid4().hex
+            job = {
+                "id": job_id, "guild_id": self.settings.discord_guild_id, "user_id": member.id,
+                "query": "Radio de favoritos", "channel_id": payload.channel_id,
+                "next_up": payload.next_up, "status": "queued", "source": "library",
+                "found": len(tracks), "resolved": 0, "omitted": 0, "added": 0,
+                "error": None, "created_at": int(time.time()),
+            }
+            self.imports[job_id] = job
+            self.storage.save_import(job)
+            task = asyncio.create_task(
+                self._run_saved_playlist(job, member, payload, tracks), name=f"radio-{job_id}"
+            )
+            self.import_tasks[job_id] = task
+            task.add_done_callback(lambda _: self.import_tasks.pop(job_id, None))
+            await self.manager.set_autoplay(self.settings.discord_guild_id, True)
+            return {"jobId": job_id}
+
+        @app.get("/api/diagnostics")
+        async def diagnostics(request: Request) -> dict[str, Any]:
+            self._require_session(request)
+            guild = self._guild()
+            return {
+                "discord": self.bot.is_ready(),
+                "discordLatencyMs": round(getattr(self.bot, "latency", 0) * 1000),
+                "lavalink": self.manager.lavalink_connected(),
+                "spotify": self.settings.spotify_enabled,
+                "connected": bool(guild.voice_client and getattr(guild.voice_client, "connected", False)),
+                "database": True,
+                "queueSize": len(self.manager.session(guild.id).queue.items),
+                "importsRunning": sum(1 for job in self.imports.values() if job["status"] in {"queued", "resolving"}),
+            }
+
+        @app.get("/api/lyrics")
+        async def lyrics(request: Request) -> dict[str, Any]:
+            self._require_session(request)
+            current = self.manager.state(self._guild()).get("current")
+            if not current:
+                raise HTTPException(404, "No hay una canción reproduciéndose")
+            cache_key = f"{current['author']}::{current['title']}::{current['duration']}"
+            if cache_key in self.lyrics_cache:
+                return self.lyrics_cache[cache_key]
+            params = {
+                "artist_name": current["author"],
+                "track_name": current["title"],
+                "duration": max(1, round(current["duration"] / 1000)),
+            }
+            try:
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+                    async with session.get("https://lrclib.net/api/get", params=params) as response:
+                        if response.status == 404:
+                            result = {"title": current["title"], "artist": current["author"], "lines": [], "plain": None, "provider": "LRCLIB"}
+                        elif response.status >= 400:
+                            raise RuntimeError(f"LRCLIB respondió {response.status}")
+                        else:
+                            payload = await response.json()
+                            result = {
+                                "title": current["title"], "artist": current["author"],
+                                "lines": self._parse_synced_lyrics(payload.get("syncedLyrics") or ""),
+                                "plain": payload.get("plainLyrics"), "provider": "LRCLIB",
+                            }
+            except (aiohttp.ClientError, TimeoutError, RuntimeError) as exc:
+                LOGGER.warning("lyrics_lookup_failed title=%r error=%s", current["title"], exc)
+                raise HTTPException(502, "No se pudieron consultar las letras en este momento") from exc
+            if len(self.lyrics_cache) >= 100:
+                self.lyrics_cache.pop(next(iter(self.lyrics_cache)))
+            self.lyrics_cache[cache_key] = result
+            return result
 
         @app.get("/api/voice-channels")
         async def voice_channels(request: Request) -> list[dict[str, Any]]:
@@ -301,6 +541,11 @@ class WebServer:
             job_id = uuid.uuid4().hex
             job = {
                 "id": job_id,
+                "guild_id": self.settings.discord_guild_id,
+                "user_id": member.id,
+                "query": payload.query,
+                "channel_id": payload.channel_id,
+                "next_up": payload.next_up,
                 "status": "queued",
                 "source": "unknown",
                 "found": 0,
@@ -308,11 +553,13 @@ class WebServer:
                 "omitted": 0,
                 "added": 0,
                 "error": None,
+                "created_at": int(time.time()),
             }
             self.imports[job_id] = job
+            self.storage.save_import(job)
             task = asyncio.create_task(self._run_import(job, member, payload), name=f"import-{job_id}")
-            self.import_tasks.add(task)
-            task.add_done_callback(self.import_tasks.discard)
+            self.import_tasks[job_id] = task
+            task.add_done_callback(lambda _: self.import_tasks.pop(job_id, None))
             return {"jobId": job_id}
 
         @app.get("/api/imports/{job_id}")
@@ -320,7 +567,60 @@ class WebServer:
             self._require_session(request)
             if job_id not in self.imports:
                 raise HTTPException(404, "Importación no encontrada")
-            return self.imports[job_id]
+            return self._public_import(self.imports[job_id])
+
+        @app.post("/api/imports/{job_id}/cancel")
+        async def cancel_import(
+            job_id: str, request: Request, x_csrf_token: str = Header(default="")
+        ) -> dict[str, bool]:
+            _, session = self._require_session(request)
+            self._verify_mutation(request, session, x_csrf_token)
+            job = self.imports.get(job_id)
+            if not job:
+                raise HTTPException(404, "Importación no encontrada")
+            task = self.import_tasks.get(job_id)
+            if task and not task.done():
+                task.cancel()
+            job.update(status="cancelled", error="Cancelada por el usuario")
+            self.storage.save_import(job)
+            await self.broadcast("import")
+            return {"ok": True}
+
+        @app.post("/api/imports/{job_id}/retry", status_code=202)
+        async def retry_import(
+            job_id: str,
+            payload: RetryImportRequest,
+            request: Request,
+            x_csrf_token: str = Header(default=""),
+        ) -> dict[str, str]:
+            member = await self._mutation_member(request, x_csrf_token)
+            original = self.imports.get(job_id)
+            if not original:
+                raise HTTPException(404, "Importación no encontrada")
+            replay = PlayRequest(
+                query=original["query"], channel_id=payload.channel_id, next_up=bool(original["next_up"])
+            )
+            new_id = uuid.uuid4().hex
+            job = {
+                **original,
+                "id": new_id,
+                "user_id": member.id,
+                "channel_id": payload.channel_id,
+                "status": "queued",
+                "source": "unknown",
+                "found": 0,
+                "resolved": 0,
+                "omitted": 0,
+                "added": 0,
+                "error": None,
+                "created_at": int(time.time()),
+            }
+            self.imports[new_id] = job
+            self.storage.save_import(job)
+            task = asyncio.create_task(self._run_import(job, member, replay), name=f"import-{new_id}")
+            self.import_tasks[new_id] = task
+            task.add_done_callback(lambda _: self.import_tasks.pop(new_id, None))
+            return {"jobId": new_id}
 
         @app.post("/api/player/{action}")
         async def player_action(
@@ -400,6 +700,10 @@ class WebServer:
                     await self.manager.set_loop(guild.id, LoopMode(str(payload.value)))
                 elif setting == "autoplay":
                     await self.manager.set_autoplay(guild.id, bool(payload.value))
+                elif setting == "filter":
+                    await self.manager.set_filter(guild, member, str(payload.value))
+                elif setting == "stay247":
+                    await self.manager.set_247(guild, member, bool(payload.value))
                 else:
                     raise HTTPException(404, "Ajuste desconocido")
             except (ValueError, TypeError) as exc:
@@ -453,6 +757,7 @@ class WebServer:
         async def progress(update: dict[str, int | str]) -> None:
             job.update(update)
             job["status"] = "resolving"
+            self.storage.save_import(job)
             await self.broadcast("import")
 
         try:
@@ -466,11 +771,72 @@ class WebServer:
                 progress=progress,
             )
             job.update(status="complete", added=accepted, omitted=omitted)
+        except asyncio.CancelledError:
+            job.update(status="cancelled", error="Cancelada por el usuario")
         except Exception as exc:
             LOGGER.exception("web_import_failed job_id=%s", job["id"])
             message = str(exc) if isinstance(exc, (MusicError, HTTPException)) else "Error interno al importar"
             job.update(status="failed", error=message)
+        self.storage.save_import(job)
         await self.broadcast("import")
+
+    async def _run_saved_playlist(
+        self,
+        job: dict[str, Any],
+        member: discord.Member,
+        payload: PlaylistPlayRequest,
+        tracks: list[dict[str, Any]],
+    ) -> None:
+        ordered = list(reversed(tracks)) if payload.next_up else tracks
+        try:
+            job["status"] = "resolving"
+            for stored in ordered:
+                try:
+                    accepted, omitted, _ = await self.manager.enqueue(
+                        self._guild(), member, None, stored["uri"], next_up=payload.next_up,
+                        channel_id=payload.channel_id,
+                    )
+                    job["added"] += accepted
+                    job["resolved"] += accepted
+                    job["omitted"] += omitted
+                except (MusicError, HTTPException):
+                    job["omitted"] += 1
+                self.storage.save_import(job)
+                await self.broadcast("import")
+            job["status"] = "complete" if job["added"] else "failed"
+            if not job["added"]:
+                job["error"] = "No se pudo resolver ninguna canción guardada"
+        except asyncio.CancelledError:
+            job.update(status="cancelled", error="Cancelada por el usuario")
+        except Exception:
+            LOGGER.exception("saved_playlist_import_failed job_id=%s", job["id"])
+            job.update(status="failed", error="Error interno al reproducir la playlist")
+        self.storage.save_import(job)
+        await self.broadcast("import")
+
+    @staticmethod
+    def _public_import(job: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: job.get(key)
+            for key in (
+                "id", "query", "next_up", "status", "source", "found", "resolved",
+                "omitted", "added", "error", "created_at",
+            )
+        }
+
+    @staticmethod
+    def _parse_synced_lyrics(value: str) -> list[dict[str, Any]]:
+        lines: list[dict[str, Any]] = []
+        pattern = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)")
+        for raw_line in value.splitlines():
+            match = pattern.match(raw_line)
+            if not match:
+                continue
+            milliseconds = int((int(match.group(1)) * 60 + float(match.group(2))) * 1000)
+            text = match.group(3).strip()
+            if text:
+                lines.append({"time": milliseconds, "text": text})
+        return lines
 
     def _valid_state(self, state: str) -> bool:
         try:

@@ -14,6 +14,7 @@ import wavelink
 from src.config import Settings
 from src.queue import LoopMode, QueueFullError, SessionQueue
 from src.spotify import SpotifyClient, SpotifyError, SpotifyTrack, is_spotify_url
+from src.storage import MusicStorage
 from src.utils import match_score
 from src.youtube import YoutubeStreamResolver
 
@@ -39,13 +40,24 @@ class GuildSession:
     tracked_identifier: str | None = None
     last_position: int = 0
     last_progress_at: float = field(default_factory=time.monotonic)
+    voice_channel_id: int | None = None
+    filter_preset: str = "off"
+    stay_247: bool = False
+    current_started_at: float | None = None
 
 
 class MusicManager:
-    def __init__(self, bot: discord.Client, settings: Settings, spotify: SpotifyClient | None = None) -> None:
+    def __init__(
+        self,
+        bot: discord.Client,
+        settings: Settings,
+        spotify: SpotifyClient | None = None,
+        storage: MusicStorage | None = None,
+    ) -> None:
         self.bot = bot
         self.settings = settings
         self.spotify = spotify
+        self.storage = storage or MusicStorage(settings.database_path)
         self.youtube = YoutubeStreamResolver()
         self.sessions: dict[int, GuildSession] = {}
         self._listeners: set[StateListener] = set()
@@ -67,10 +79,39 @@ class MusicManager:
 
     def session(self, guild_id: int) -> GuildSession:
         if guild_id not in self.sessions:
-            self.sessions[guild_id] = GuildSession(
+            session = GuildSession(
                 queue=SessionQueue(max_size=self.settings.max_queue_size),
                 volume=self.settings.default_volume,
             )
+            saved = self.storage.load_session(guild_id)
+            if saved:
+                session.volume = max(1, min(150, int(saved["volume"])))
+                session.text_channel_id = saved.get("text_channel_id")
+                session.voice_channel_id = saved.get("voice_channel_id")
+                try:
+                    session.queue.loop_mode = LoopMode(saved["loop_mode"])
+                except ValueError:
+                    pass
+                session.queue.autoplay = bool(saved["autoplay"])
+                session.filter_preset = str(saved.get("filter_preset") or "off")
+                session.stay_247 = bool(saved.get("stay_247"))
+                # A process restart cannot resume the same Lavalink player.
+                # Put the interrupted song back at the front of the durable queue.
+                raw_tracks = []
+                if saved.get("current_track"):
+                    raw_tracks.append(saved["current_track"])
+                raw_tracks.extend(saved.get("queue_tracks", []))
+                for raw in raw_tracks[: self.settings.max_queue_size]:
+                    try:
+                        session.queue.items.append(wavelink.Playable(raw))
+                    except (KeyError, TypeError, ValueError):
+                        LOGGER.warning("persisted_track_invalid guild_id=%s", guild_id)
+                for raw in saved.get("history_tracks", [])[-100:]:
+                    try:
+                        session.queue.history.append(wavelink.Playable(raw))
+                    except (KeyError, TypeError, ValueError):
+                        LOGGER.warning("persisted_history_invalid guild_id=%s", guild_id)
+            self.sessions[guild_id] = session
         return self.sessions[guild_id]
 
     async def close(self) -> None:
@@ -83,6 +124,7 @@ class MusicManager:
                 session.recovery_task.cancel()
         if self.spotify:
             await self.spotify.close()
+        self.storage.close()
 
     @staticmethod
     def member_voice_channel(member: discord.Member) -> discord.VoiceChannel | discord.StageChannel:
@@ -114,11 +156,18 @@ class MusicManager:
                     raise MusicError(f"Ya estoy siendo usado en **{player.channel.name}**.")
                 await player.move_to(member_channel)
                 await self.emit("connection")
+            self.session(guild.id).voice_channel_id = member_channel.id
+            self._persist_session(guild.id)
             self._ensure_monitor(player)
             if self.session(guild.id).queue.current is None:
                 self._schedule_idle(player, self.session(guild.id))
             return player
         player = await member_channel.connect(cls=wavelink.Player, self_deaf=True)
+        connected_session = self.session(guild.id)
+        connected_session.voice_channel_id = member_channel.id
+        if connected_session.filter_preset != "off":
+            await player.set_filters(self._filters_for_preset(connected_session.filter_preset))
+        self._persist_session(guild.id)
         self._ensure_monitor(player)
         self._schedule_idle(player, self.session(guild.id))
         await self.emit("connection")
@@ -209,6 +258,28 @@ class MusicManager:
             self._set_requester(track, requester)
         await self._progress(progress, source="youtube", found=len(tracks), resolved=len(tracks), omitted=0)
         return tracks, 0
+
+    async def search_candidates(self, query: str, requester: discord.abc.User) -> list[dict[str, Any]]:
+        """Return choices without mutating the queue."""
+        if is_spotify_url(query) or query.startswith(("http://", "https://")):
+            tracks, _ = await self.resolve(query, requester)
+            return [self.track_data(track) for track in tracks[:5] if track is not None]
+        candidates: list[wavelink.Playable] = []
+        for source in (wavelink.TrackSource.YouTube, wavelink.TrackSource.YouTubeMusic):
+            try:
+                results = await wavelink.Playable.search(query, source=source)
+            except Exception:
+                LOGGER.exception("candidate_search_failed source=%s query=%r", source.value, query)
+                continue
+            for track in self._search_tracks(results):
+                if all(self._track_identifier(track) != self._track_identifier(item) for item in candidates):
+                    self._set_requester(track, requester)
+                    candidates.append(track)
+                if len(candidates) >= 5:
+                    break
+            if len(candidates) >= 5:
+                break
+        return [self.track_data(track) for track in candidates if track is not None]
 
     async def _resolve_spotify_track(self, wanted: SpotifyTrack, requester: discord.abc.User) -> wavelink.Playable | None:
         candidates: list[wavelink.Playable] = []
@@ -339,6 +410,7 @@ class MusicManager:
         session = self.session(guild.id)
         async with session.lock:
             session.text_channel_id = text_channel_id
+            session.voice_channel_id = getattr(getattr(player, "channel", None), "id", channel_id)
             self._cancel_idle(session)
             try:
                 accepted = session.queue.add(tracks, next_up=next_up)
@@ -349,6 +421,7 @@ class MusicManager:
                 # Claim the transition before releasing the lock. Two concurrent
                 # Discord/web imports must never both consume the queue head.
                 session.starting = True
+            self._persist_session(guild.id)
         started_track: wavelink.Playable | None = None
         if should_start:
             started_track = await self.play_next(player)
@@ -390,6 +463,7 @@ class MusicManager:
             session.starting = True
             try:
                 if session.queue.current is not None:
+                    self._record_finished(player.guild.id, session, failed=failed)
                     if failed and announce_current_failure:
                         failed_tracks.append(session.queue.current)
                     session.queue.finish_current(failed=failed)
@@ -417,6 +491,7 @@ class MusicManager:
                     started_track = next_track
             finally:
                 session.starting = False
+            self._persist_session(player.guild.id)
         if failed_tracks:
             await self._announce_failed_tracks(session, failed_tracks)
         await self.emit("player")
@@ -427,7 +502,9 @@ class MusicManager:
         session.tracked_identifier = self._track_identifier(track)
         session.last_position = 0
         session.last_progress_at = time.monotonic()
+        session.current_started_at = time.monotonic()
         await player.play(track, volume=self.session(player.guild.id).volume)
+        self._persist_session(player.guild.id)
 
     def record_player_update(self, player: wavelink.Player, position: int, connected: bool) -> None:
         session = self.session(player.guild.id)
@@ -547,6 +624,7 @@ class MusicManager:
         player = self.require_same_channel(guild, member)
         session = self.session(guild.id)
         async with session.lock:
+            self._record_finished(guild.id, session, failed=False)
             track = session.queue.previous()
             if not track:
                 raise MusicError("No hay una canción anterior.")
@@ -558,17 +636,20 @@ class MusicManager:
         player = self.require_same_channel(guild, member)
         session = self.session(guild.id)
         async with session.lock:
+            self._record_finished(guild.id, session, failed=True)
             session.queue.reset()
             session.starting = False
             self._cancel_recovery(session)
             await player.skip(force=True)
             self._schedule_idle(player, session)
+            self._persist_session(guild.id)
         await self.emit("player")
 
     async def disconnect(self, guild: discord.Guild, member: discord.Member) -> None:
         player = self.require_same_channel(guild, member)
         session = self.session(guild.id)
         async with session.lock:
+            self._record_finished(guild.id, session, failed=True)
             session.queue.reset()
             session.starting = False
             self._cancel_recovery(session)
@@ -576,12 +657,16 @@ class MusicManager:
                 session.monitor_task.cancel()
             session.monitor_task = None
             await player.disconnect()
+            session.voice_channel_id = None
+            session.stay_247 = False
+            self._persist_session(guild.id)
         await self.emit("connection")
 
     async def remove(self, guild_id: int, position: int) -> wavelink.Playable:
         session = self.session(guild_id)
         async with session.lock:
             track = session.queue.remove(position)
+            self._persist_session(guild_id)
         await self.emit("queue")
         return track
 
@@ -589,12 +674,14 @@ class MusicManager:
         session = self.session(guild_id)
         async with session.lock:
             session.queue.move(origin, destination)
+            self._persist_session(guild_id)
         await self.emit("queue")
 
     async def clear(self, guild_id: int) -> int:
         session = self.session(guild_id)
         async with session.lock:
             count = session.queue.clear()
+            self._persist_session(guild_id)
         await self.emit("queue")
         return count
 
@@ -604,6 +691,7 @@ class MusicManager:
             if len(session.queue.items) < 2:
                 raise MusicError("Se necesitan al menos dos canciones pendientes.")
             session.queue.shuffle()
+            self._persist_session(guild_id)
         await self.emit("queue")
 
     async def jump(self, guild: discord.Guild, member: discord.Member, position: int) -> None:
@@ -611,6 +699,7 @@ class MusicManager:
         session = self.session(guild.id)
         async with session.lock:
             session.queue.jump(position)
+            self._persist_session(guild.id)
             await player.skip(force=True)
 
     async def seek(self, guild: discord.Guild, member: discord.Member, milliseconds: int) -> None:
@@ -629,18 +718,82 @@ class MusicManager:
         player = self.require_same_channel(guild, member)
         self.session(guild.id).volume = volume
         await player.set_volume(volume)
+        self._persist_session(guild.id)
         await self.emit("settings")
 
     async def set_loop(self, guild_id: int, mode: LoopMode) -> None:
         session = self.session(guild_id)
         async with session.lock:
             session.queue.loop_mode = mode
+            self._persist_session(guild_id)
         await self.emit("settings")
 
     async def set_autoplay(self, guild_id: int, enabled: bool) -> None:
         session = self.session(guild_id)
         async with session.lock:
             session.queue.autoplay = enabled
+            self._persist_session(guild_id)
+        await self.emit("settings")
+
+    async def set_filter(self, guild: discord.Guild, member: discord.Member, preset: str) -> None:
+        player = self.require_same_channel(guild, member)
+        session = self.session(guild.id)
+        filters = self._filters_for_preset(preset)
+        await player.set_filters(filters)
+        session.filter_preset = preset
+        self._persist_session(guild.id)
+        await self.emit("settings")
+
+    async def restore_247(self, guild: discord.Guild) -> None:
+        session = self.session(guild.id)
+        if not session.stay_247 or not session.voice_channel_id or guild.voice_client:
+            return
+        channel = guild.get_channel(session.voice_channel_id)
+        if not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
+            LOGGER.warning("restore_247_channel_missing guild_id=%s channel_id=%s", guild.id, session.voice_channel_id)
+            return
+        try:
+            player = await channel.connect(cls=wavelink.Player, self_deaf=True)
+            if session.filter_preset != "off":
+                await player.set_filters(self._filters_for_preset(session.filter_preset))
+            self._ensure_monitor(player)
+            if session.queue.items:
+                await self.play_next(player)
+            await self.emit("connection")
+        except Exception:
+            LOGGER.exception("restore_247_failed guild_id=%s channel_id=%s", guild.id, session.voice_channel_id)
+
+    @staticmethod
+    def _filters_for_preset(preset: str) -> wavelink.Filters | None:
+        if preset == "off":
+            return None
+        filters = wavelink.Filters()
+        if preset == "bassboost":
+            filters.equalizer.set(bands=[
+                {"band": band, "gain": gain}
+                for band, gain in enumerate((0.22, 0.18, 0.14, 0.10, 0.06))
+            ])
+        elif preset == "nightcore":
+            filters.timescale.set(speed=1.15, pitch=1.2, rate=1.0)
+        elif preset == "vaporwave":
+            filters.timescale.set(speed=0.85, pitch=0.8, rate=1.0)
+        elif preset == "8d":
+            filters.rotation.set(rotation_hz=0.2)
+        elif preset == "karaoke":
+            filters.karaoke.set(level=0.8, mono_level=1.0, filter_band=220.0, filter_width=100.0)
+        else:
+            raise MusicError("Filtro desconocido.")
+        return filters
+
+    async def set_247(self, guild: discord.Guild, member: discord.Member, enabled: bool) -> None:
+        player = self.require_same_channel(guild, member)
+        session = self.session(guild.id)
+        session.stay_247 = enabled
+        if enabled:
+            self._cancel_idle(session)
+        elif session.queue.current is None:
+            self._schedule_idle(player, session)
+        self._persist_session(guild.id)
         await self.emit("settings")
 
     def state(self, guild: discord.Guild) -> dict[str, Any]:
@@ -655,6 +808,8 @@ class MusicManager:
             "volume": session.volume,
             "loop": session.queue.loop_mode.value,
             "autoplay": session.queue.autoplay,
+            "filter": session.filter_preset,
+            "stay247": session.stay_247,
             "current": self.track_data(session.queue.current),
             "queue": [self.track_data(track, index=index) for index, track in enumerate(session.queue.items, 1)],
             "historyCount": len(session.queue.history),
@@ -664,6 +819,52 @@ class MusicManager:
     @staticmethod
     def lavalink_connected() -> bool:
         return any(node.status is wavelink.NodeStatus.CONNECTED for node in wavelink.Pool.nodes.values())
+
+    def _persist_session(self, guild_id: int) -> None:
+        session = self.sessions.get(guild_id)
+        if session is None:
+            return
+        queue_tracks = [raw for track in session.queue.items if (raw := self._raw_track(track))]
+        history_tracks = [raw for track in session.queue.history if (raw := self._raw_track(track))]
+        self.storage.save_session(
+            guild_id,
+            {
+                "volume": session.volume,
+                "loop_mode": session.queue.loop_mode.value,
+                "autoplay": session.queue.autoplay,
+                "text_channel_id": session.text_channel_id,
+                "voice_channel_id": session.voice_channel_id,
+                "current_track": self._raw_track(session.queue.current),
+                "queue_tracks": queue_tracks,
+                "history_tracks": history_tracks,
+                "filter_preset": session.filter_preset,
+                "stay_247": session.stay_247,
+            },
+        )
+
+    def _record_finished(self, guild_id: int, session: GuildSession, *, failed: bool) -> None:
+        track = session.queue.current
+        if not isinstance(track, wavelink.Playable) or session.current_started_at is None:
+            return
+        data = self.track_data(track)
+        if data is None:
+            return
+        elapsed = round((time.monotonic() - session.current_started_at) * 1000)
+        listened = min(track.length, max(0, elapsed)) if not track.is_stream else elapsed
+        self.storage.record_play(
+            guild_id,
+            data,
+            getattr(track.extras, "requester_id", None),
+            listened_ms=listened,
+            outcome="failed" if failed else "completed",
+        )
+        session.current_started_at = None
+
+    @staticmethod
+    def _raw_track(track: wavelink.Playable | None) -> dict[str, Any] | None:
+        if track is None or not isinstance(track, wavelink.Playable):
+            return None
+        return dict(track.raw_data)
 
     @staticmethod
     def track_data(track: wavelink.Playable | None, *, index: int | None = None) -> dict[str, Any] | None:
@@ -686,6 +887,8 @@ class MusicManager:
         return data
 
     def _schedule_idle(self, player: wavelink.Player, session: GuildSession) -> None:
+        if session.stay_247:
+            return
         if session.idle_task and not session.idle_task.done():
             return
         session.idle_task = asyncio.create_task(self._idle_disconnect(player, session))
@@ -694,7 +897,7 @@ class MusicManager:
         try:
             empty_since: float | None = None
             interval = min(30, max(1, self.settings.idle_timeout_seconds))
-            while player.connected and session.queue.current is None:
+            while getattr(player, "connected", False) and session.queue.current is None:
                 humans = any(not user.bot for user in player.channel.members)
                 if humans:
                     empty_since = None

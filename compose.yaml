@@ -67,13 +67,14 @@ services:
       IDLE_TIMEOUT_SECONDS: ${IDLE_TIMEOUT_SECONDS:-600}
       MAX_QUEUE_SIZE: ${MAX_QUEUE_SIZE:-500}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      BOT_DISPLAY_NAME: ${BOT_DISPLAY_NAME:-Bot Marushan}
+      BOT_DISPLAY_NAME: ${BOT_DISPLAY_NAME:-Bot Nissin}
       WEB_HOST: 0.0.0.0
       WEB_PORT: 8090
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://127.0.0.1:8090}
       DISCORD_OAUTH_CLIENT_ID: ${DISCORD_OAUTH_CLIENT_ID:-}
       DISCORD_OAUTH_CLIENT_SECRET_FILE: /run/secrets/discord_oauth_client_secret
       WEB_SESSION_SECRET_FILE: /run/secrets/web_session_secret
+      DATABASE_PATH: /data/music.db
     secrets:
       - discord_token
       - lavalink_password
@@ -85,6 +86,7 @@ services:
       - "127.0.0.1:8090:8090"
     volumes:
       - ./media:/media:ro
+      - bot-data:/data
     networks:
       - music-internal
     healthcheck:
@@ -101,6 +103,9 @@ services:
 networks:
   music-internal:
     driver: bridge
+
+volumes:
+  bot-data:
 
 secrets:
   discord_token:

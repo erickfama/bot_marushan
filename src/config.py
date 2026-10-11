@@ -36,13 +36,14 @@ class Settings:
     idle_timeout_seconds: int = 600
     max_queue_size: int = 500
     log_level: str = "INFO"
-    bot_display_name: str = "Bot Marushan"
+    bot_display_name: str = "Bot Nissin"
     web_host: str = "0.0.0.0"
     web_port: int = 8090
     public_base_url: str = "http://127.0.0.1:8090"
     discord_oauth_client_id: str | None = None
     discord_oauth_client_secret: str | None = None
     web_session_secret: str | None = None
+    database_path: str = ":memory:"
 
     def __post_init__(self) -> None:
         if not 1 <= self.default_volume <= 150:
@@ -83,13 +84,14 @@ class Settings:
             idle_timeout_seconds=_integer("IDLE_TIMEOUT_SECONDS", 600),
             max_queue_size=queue_size,
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
-            bot_display_name=os.getenv("BOT_DISPLAY_NAME", "Bot Marushan").strip() or "Bot Marushan",
+            bot_display_name=os.getenv("BOT_DISPLAY_NAME", "Bot Nissin").strip() or "Bot Nissin",
             web_host=os.getenv("WEB_HOST", "0.0.0.0"),
             web_port=_integer("WEB_PORT", 8090),
             public_base_url=os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8090").rstrip("/"),
             discord_oauth_client_id=_secret("DISCORD_OAUTH_CLIENT_ID"),
             discord_oauth_client_secret=_secret("DISCORD_OAUTH_CLIENT_SECRET"),
             web_session_secret=_secret("WEB_SESSION_SECRET"),
+            database_path=os.getenv("DATABASE_PATH", "data/music.db"),
         )
 
     @property

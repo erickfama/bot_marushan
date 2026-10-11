@@ -75,3 +75,13 @@ def test_websocket_reports_expired_session_without_reconnect_loop() -> None:
     ) as websocket, pytest.raises(WebSocketDisconnect) as captured:
         websocket.receive_text()
     assert captured.value.code == 4401
+
+
+def test_synced_lyrics_parser_ignores_metadata_and_keeps_timing() -> None:
+    lines = WebServer._parse_synced_lyrics(
+        "[ar:Radiohead]\n[00:12.50] When you were here before\n[01:02.123] Couldn't look you in the eye"
+    )
+    assert lines == [
+        {"time": 12_500, "text": "When you were here before"},
+        {"time": 62_123, "text": "Couldn't look you in the eye"},
+    ]

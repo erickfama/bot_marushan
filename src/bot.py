@@ -28,6 +28,7 @@ class MarushanBot(commands.Bot):
         )
         self.music = MusicManager(self, settings, spotify)
         self.web = WebServer(self, self.music, settings)
+        self._restored_247 = False
 
     async def on_interaction(self, interaction: discord.Interaction) -> None:
         if interaction.type is discord.InteractionType.application_command:
@@ -61,6 +62,11 @@ class MarushanBot(commands.Bot):
 
     async def on_ready(self) -> None:
         await self._apply_display_name()
+        if not self._restored_247:
+            guild = self.get_guild(self.settings.discord_guild_id)
+            if guild:
+                await self.music.restore_247(guild)
+                self._restored_247 = True
         logging.getLogger(__name__).info("bot_ready user=%s guild_id=%s", self.user, self.settings.discord_guild_id)
 
     async def on_guild_join(self, guild: discord.Guild) -> None:
